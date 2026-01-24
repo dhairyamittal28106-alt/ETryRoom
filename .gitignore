@@ -1,0 +1,21 @@
+# Python virtual environments
+.venv/
+venv/
+
+# Python cache
+__pycache__/
+*.pyc
+
+# Editor configs
+.vscode/
+
+# ML / 3D models (DO NOT COMMIT)
+models/
+*.pkl
+*.npz
+*.pt
+*.onnx
+
+# OS junk
+.DS_Store
+Thumbs.db

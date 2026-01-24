@@ -1,0 +1,32 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ETryRoom | Your Digital Mirror</title>
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+    <div class="app-container">
+        <header>
+            <h1>ETryRoom<span>.ai</span></h1>
+            <button onclick="toggleMesh()" id="meshBtn" class="toggle-btn">Hide Mesh</button>
+        </header>
+
+        <main class="mirror-section">
+            <div class="video-wrapper">
+                <img id="videoStream" src="/video_feed" alt="ETryRoom Live Feed">
+                <!-- 🔥 AI OVERLAY REMOVED COMPLETELY 🔥 -->
+            </div>
+        </main>
+
+        <nav class="category-bar">
+            <button onclick="changeCat('clothes')" class="cat-btn">Shirts</button>
+            <button onclick="changeCat('specs')" class="cat-btn">Specs</button>
+            <button onclick="changeCat('hair')" class="cat-btn">Hair Color</button>
+        </nav>
+    </div>
+
+    <script src="/static/script.js"></script>
+</body>
+</html>
