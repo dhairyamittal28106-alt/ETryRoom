@@ -45,9 +45,10 @@ class PoseMapper:
        
         """
         body = torch.zeros((1, 63), device=self.device)
+        translation = np.zeros(3)
 
         if mp_landmarks is None:
-            return self._smooth(body)
+            return self._smooth(body), translation
 
         lm = mp_landmarks.landmark
 
@@ -100,4 +101,17 @@ class PoseMapper:
         body[0, 42:45] = torch.tensor(l_forearm, device=self.device) # Left Elbow
         body[0, 45:48] = torch.tensor(r_forearm, device=self.device) # Right Elbow
 
-        return self._smooth(body)
+        # ------------------------
+        # 4. Pose-Coordinate Handshake (Translation)
+        # ------------------------
+        # Explicitly anchor the root to the midpoint of MediaPipe Shoulders (11, 12)
+        mid_x = (lm[LS].x + lm[RS].x) / 2
+        mid_y = (lm[LS].y + lm[RS].y) / 2
+        
+        # Map normalized landmarks [0, 1] to Pyrender world units
+        # Center of screen (0.5, 0.5) maps to (0, 0) in 3D
+        trans_x = (mid_x - 0.5) * 2.5 
+        trans_y = (0.5 - mid_y) * 2.5 # Invert Y for world coordinates
+        translation = np.array([trans_x, trans_y, 0])
+
+        return self._smooth(body), translation
