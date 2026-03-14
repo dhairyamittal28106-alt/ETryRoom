@@ -48,11 +48,15 @@ class ClothSkinner:
         self.w_pelvis_v = self.w_pelvis[:, np.newaxis, np.newaxis]
         self.w_shoulders_v = self.w_shoulders[:, np.newaxis, np.newaxis]
         
-        # 5. PRECOMPUTE ANTIGRAVITY DAMPING (Stable shoulders, loose waist)
-        # We use (1.0 - t) so damping is 0.0 at top (msg stable) and 1.0 at bottom
-        # Squared falloff looks more realistic for cloth hanging
-        self.antigravity_damping = np.square(1.0 - t)
-
+        # 5. PRECOMPUTE ANTIGRAVITY DAMPING & TORSO MASK
+        # Filter for torso vertices only: exclude outer sleeves based on X coordinate threshold
+        x = self.rest_vertices[:, 0]
+        x_range = np.max(np.abs(x))
+        self.torso_mask = np.abs(x) < (x_range * 0.7)
+        
+        # We use (1.0 - t) so damping is 0.0 at top (stable) and 1.0 at bottom.
+        # Squared falloff looks more realistic for cloth hanging.
+        self.antigravity_damping = np.square(1.0 - t) * self.torso_mask
 
     def axis_angle_to_matrix(self, aa):
         """Vectorized conversion of axis-angle to 3x3 rotation matrix."""
@@ -77,15 +81,13 @@ class ClothSkinner:
         Simulates micro-gravity fabric float with vertical oscillation.
         Optimized for 60 FPS on RTX 2050 (vectorized NumPy).
         """
-        # Time-based sine wave
+        # Time-based sine wave running continuously
         t_val = time.time()
         
         # Calculate base vertical shift (vectorized)
-        # Using a slightly faster frequency for "floating" effect
         y_shift = amplitude * np.sin(2 * np.pi * frequency * t_val)
         
-        # Apply damping: 0 effect at shoulders, full effect at bottom
-        # broadcasting (N,) * scalar -> (N,)
+        # Apply damping: affects only isolated torso vertices with bottom-heavy falloff
         vertices[:, 1] += y_shift * self.antigravity_damping
         
         return vertices
@@ -98,29 +100,37 @@ class ClothSkinner:
         # 1. Extract rotations from SMPL-style pose vector
         pose_np = body_pose.detach().cpu().numpy()[0]
 
-        R_pelvis = self.axis_angle_to_matrix(pose_np[0:3])
-        R_l_shoulder = self.axis_angle_to_matrix(pose_np[36:39]) # SMPL Left Shoulder
-        R_r_shoulder = self.axis_angle_to_matrix(pose_np[39:42]) # SMPL Right Shoulder
-        
-        # Average shoulder rotation for simplified torso bending
-        R_shoulders = (R_l_shoulder + R_r_shoulder) * 0.5
+        # Physics Interpolator optimization: 
+        # Caches the heavy skinning computation and only updates Y-axis at 60Hz
+        if not hasattr(self, 'last_pose') or not np.array_equal(self.last_pose, pose_np):
+            R_pelvis = self.axis_angle_to_matrix(pose_np[0:3])
+            R_l_shoulder = self.axis_angle_to_matrix(pose_np[36:39]) # SMPL Left Shoulder
+            R_r_shoulder = self.axis_angle_to_matrix(pose_np[39:42]) # SMPL Right Shoulder
+            
+            # Average shoulder rotation for simplified torso bending
+            R_shoulders = (R_l_shoulder + R_r_shoulder) * 0.5
 
-        # 2. Batch calculate the Per-Vertex Rotation Matrices (N, 3, 3)
-        # Each vertex gets a blended rotation based on its Y-height
-        R_vertex = (self.w_pelvis_v * R_pelvis) + (self.w_shoulders_v * R_shoulders)
+            # 2. Batch calculate the Per-Vertex Rotation Matrices (N, 3, 3)
+            # Each vertex gets a blended rotation based on its Y-height
+            R_vertex = (self.w_pelvis_v * R_pelvis) + (self.w_shoulders_v * R_shoulders)
 
-        # 3. Vectorized Vertex Transformation using Einstein Summation
-        # 'nij,nj->ni' means: multiply (N, 3, 3) by (N, 3) to get (N, 3)
-        new_verts = np.einsum('nij,nj->ni', R_vertex, self.rest_vertices)
+            # 3. Vectorized Vertex Transformation using Einstein Summation
+            self.skinned_verts = np.einsum('nij,nj->ni', R_vertex, self.rest_vertices)
+            self.last_pose = pose_np.copy()
+            self.compute_normals = True
+
+        new_verts = self.skinned_verts.copy()
         
-        # 4. Apply Antigravity Physics (Vectorized)
-        new_verts = self.apply_antigravity(new_verts)
+        # 4. Apply Antigravity Physics (Vectorized) logic running at 60Hz
+        # Static-Mesh Override Physics: V_y = V_y + 0.05 * sin(1.5 * t)
+        new_verts = self.apply_antigravity(new_verts, amplitude=0.05, frequency=1.5 / (2 * np.pi))
 
         # 5. Update the mesh for the renderer
         self.mesh.vertices = new_verts
         
-        # Optional: Normals can be heavy to fix every frame, 
-        # but required for lighting/shading
-        self.mesh.fix_normals()
+        # Only recompute normals when the skinning changes to save render time
+        if getattr(self, 'compute_normals', True):
+            self.mesh.fix_normals()
+            self.compute_normals = False
 
         return self.mesh

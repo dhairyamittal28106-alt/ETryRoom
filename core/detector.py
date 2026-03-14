@@ -12,10 +12,11 @@ class ETryDetector:
         self.mp_holistic = mp.solutions.holistic
         self.mp_drawing = mp.solutions.drawing_utils
         
-        # High-performance holistic model optimized for real-time AR
+        self.segmentation_enabled = False
         self.holistic = self.mp_holistic.Holistic(
             static_image_mode=False,
             model_complexity=1,
+            enable_segmentation=self.segmentation_enabled,
             min_detection_confidence=0.5,
             min_tracking_confidence=0.5
         )
