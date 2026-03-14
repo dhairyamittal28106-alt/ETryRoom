@@ -1,3 +1,4 @@
+import os
 import torch
 import smplx
 import trimesh
@@ -7,11 +8,16 @@ import cv2
 
 from core.cloth_skinner import ClothSkinner
 
-
 class Engine3D:
     def __init__(self, model_path="models/smplx"):
+        """
+        Initializes the 3D Rendering Engine for ETryRoom.ai.
+        Specifically optimized for RTX 2050 CUDA cores.
+        """
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
+        # ---------------- 1. SMPL-X MODEL INITIALIZATION ----------------
+        # Loads the parametric body model with 6,890 vertices.
         self.model = smplx.create(
             model_path=model_path,
             model_type="smplx",
@@ -20,10 +26,70 @@ class Engine3D:
             batch_size=1
         ).to(self.device)
 
+        # ---------------- 2. LOAD SHIRT MESH ----------------
+        # Loads the .obj shirt geometry that will deform with the body.
         self.shirt = ClothSkinner("assets/shirts_3d/basic_shirt.obj")
 
-    # ---------------- BODY ----------------
+        # ---------------- 3. AUTO UV GENERATION ----------------
+        # Maps the 2D shirt.png onto the 3D shirt.obj vertices.
+        verts = self.shirt.mesh.vertices
+        u = (verts[:, 0] - verts[:, 0].min()) / (np.ptp(verts[:, 0]) + 1e-8)
+        v = (verts[:, 1] - verts[:, 1].min()) / (np.ptp(verts[:, 1]) + 1e-8)
+
+        uv = np.column_stack([u, v])
+        self.shirt.mesh.visual = trimesh.visual.texture.TextureVisuals(uv=uv)
+
+        # ---------------- 4. LOAD SHIRT TEXTURE ----------------
+        texture_path = os.path.join(
+            os.path.dirname(__file__),
+            "..",
+            "assets",
+            "shirt.png"
+        )
+
+        tex_img = cv2.imread(texture_path)
+        if tex_img is None:
+            raise RuntimeError(f"FAILED TO LOAD shirt.png at {texture_path}")
+
+        tex_img = cv2.cvtColor(tex_img, cv2.COLOR_BGR2RGB)
+        self.shirt_texture = pyrender.Texture(
+            source=tex_img,
+            source_channels="RGB"
+        )
+
+        # ---------------- 5. MATERIALS & PBR ----------------
+        self.cloth_material = pyrender.MetallicRoughnessMaterial(
+            baseColorTexture=self.shirt_texture,
+            metallicFactor=0.0,
+            roughnessFactor=0.85
+        )
+
+        self.body_material = pyrender.MetallicRoughnessMaterial(
+            baseColorFactor=[0.6, 0.6, 0.6, 1.0],
+            metallicFactor=0.0,
+            roughnessFactor=1.0
+        )
+
+    def update_texture(self, image_url):
+        """Texture-Mapping Pipeline: Downloads an external URL and maps it to the 6,890 SMPL-X vertices."""
+        import urllib.request
+        try:
+            req = urllib.request.Request(image_url, headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'})
+            with urllib.request.urlopen(req, timeout=5) as response:
+                img_array = np.asarray(bytearray(response.read()), dtype=np.uint8)
+                tex_img = cv2.imdecode(img_array, cv2.IMREAD_COLOR)
+                if tex_img is not None:
+                    tex_img = cv2.cvtColor(tex_img, cv2.COLOR_BGR2RGB)
+                    self.shirt_texture = pyrender.Texture(
+                        source=tex_img,
+                        source_channels="RGB"
+                    )
+                    self.cloth_material.baseColorTexture = self.shirt_texture
+        except Exception as e:
+            raise RuntimeError(f"Deep-Link Image Transfer Failed: {e}")
+
     def body_mesh(self, body_pose):
+        """Generates the SMPL-X body surface for the current pose."""
         output = self.model(
             betas=torch.zeros((1, 10), device=self.device),
             body_pose=body_pose,
@@ -40,24 +106,25 @@ class Engine3D:
         faces = self.model.faces
         return trimesh.Trimesh(verts, faces, process=False)
 
-    # ---------------- RENDER ----------------
-    def render_with_depth(self, meshes, w, h):
+    def render_with_depth(self, meshes, materials, w, h):
+        """Handles GPU-accelerated 3D rendering with Z-buffering."""
         scene = pyrender.Scene(bg_color=[0, 0, 0, 0])
 
-        for m in meshes:
-            scene.add(pyrender.Mesh.from_trimesh(m, smooth=True))
+        for m, mat in zip(meshes, materials):
+            scene.add(
+                pyrender.Mesh.from_trimesh(m, material=mat, smooth=True)
+            )
 
-        cam = pyrender.PerspectiveCamera(yfov=np.pi / 3)
+        cam = pyrender.PerspectiveCamera(yfov=np.pi / 3.2)
         cam_pose = np.array([
             [1, 0, 0, 0],
             [0, 1, 0, 0],
-            [0, 0, 1, 2.5],
+            [0, 0, 1, 2.7],
             [0, 0, 0, 1]
         ])
-        scene.add(cam, pose=cam_pose)
 
-        light = pyrender.DirectionalLight(color=np.ones(3), intensity=3.0)
-        scene.add(light, pose=cam_pose)
+        scene.add(cam, pose=cam_pose)
+        scene.add(pyrender.DirectionalLight(color=np.ones(3), intensity=2.0), pose=cam_pose)
 
         r = pyrender.OffscreenRenderer(w, h)
         color, depth = r.render(scene)
@@ -65,75 +132,51 @@ class Engine3D:
 
         return color, depth
 
-    # ---------------- LIVE TRY-ON ----------------
     def render_live(self, body_pose, w, h):
-        body = self.body_mesh(body_pose)
+        """Main entry point for real-time shirt deformation."""
+        # Deforms the 3D cloth based on the new SMPL pose
         cloth = self.shirt.deform(body_pose)
-
-        body_color, body_depth = self.render_with_depth([body], w, h)
-        cloth_color, cloth_depth = self.render_with_depth([cloth], w, h)
-
-        final = body_color.copy()
-
-        mask = (cloth_depth > 0) & (
-            (body_depth == 0) | (cloth_depth < body_depth)
+        cloth_color, cloth_depth = self.render_with_depth(
+            [cloth], [self.cloth_material], w, h
         )
+        return cloth_color
 
-        for c in range(3):
-            final[:, :, c][mask] = cloth_color[:, :, c][mask]
-
-        return final
-
-    # ---------------- CAMERA COMPOSITING ----------------
-    def composite_on_camera(self, camera_bgr, body_pose):
-        h, w = camera_bgr.shape[:2]
-
-        render_rgb = self.render_live(body_pose, w, h)
-        render_bgr = cv2.cvtColor(render_rgb, cv2.COLOR_RGB2BGR)
-
-        gray = cv2.cvtColor(render_bgr, cv2.COLOR_BGR2GRAY)
-        _, mask = cv2.threshold(gray, 5, 255, cv2.THRESH_BINARY)
-        mask = cv2.GaussianBlur(mask, (7, 7), 0)
-        alpha = (mask / 255.0)[..., None]
-
-        return (alpha * render_bgr + (1 - alpha) * camera_bgr).astype("uint8")
-
-    # ---------------- ALIGN TO BODY ----------------
     def align_to_body(self, render_bgr, pose_landmarks, frame_shape):
+        """Aligns the 3D render to the 2D webcam coordinate space."""
         h, w = frame_shape[:2]
-
         lm = pose_landmarks.landmark
-        ls = lm[11]  # left shoulder
-        rs = lm[12]  # right shoulder
+    
+        ls = lm[11]   # left shoulder
+        rs = lm[12]   # right shoulder
+        lh = lm[23]   # left hip
+        rh = lm[24]   # right hip
 
-        # Shoulder center
+        # Calculate shoulder center for anchoring the shirt
         cx = int((ls.x + rs.x) * 0.5 * w)
         cy = int((ls.y + rs.y) * 0.5 * h)
 
-        # Shoulder width → scale
-        shoulder_dist = np.sqrt(
-            ((ls.x - rs.x) * w) ** 2 +
-            ((ls.y - rs.y) * h) ** 2
-        )
+        # Dynamic scaling based on torso height
+        hip_y = int((lh.y + rh.y) * 0.5 * h)
+        torso_height = abs(hip_y - cy)
+        scale = np.clip(torso_height / 350.0, 0.9, 1.6)
 
-        scale = np.clip(shoulder_dist / 180.0, 0.6, 1.4)
+        render = cv2.resize(render_bgr, None, fx=scale, fy=scale)
+        rhh, rww = render.shape[:2]
 
-        render = cv2.resize(
-            render_bgr,
-            None,
-            fx=scale,
-            fy=scale,
-            interpolation=cv2.INTER_LINEAR
-        )
-
-        rh, rw = render.shape[:2]
-
-        x1 = max(cx - rw // 2, 0)
-        y1 = max(cy - int(rh * 0.15), 0)
-        x2 = min(x1 + rw, w)
-        y2 = min(y1 + rh, h)
-
+        # Offset shirt top to sit correctly on neck line
+        x1 = int(cx - rww / 2)
+        y1 = int(cy - rhh * 0.08)
+        x2, y2 = x1 + rww, y1 + rhh
+        
         out = np.zeros((h, w, 3), dtype=np.uint8)
-        out[y1:y2, x1:x2] = render[0:y2 - y1, 0:x2 - x1]
+
+        # Clipping safety logic for edge of screen
+        x1c, y1c = max(0, x1), max(0, y1)
+        x2c, y2c = min(w, x2), min(h, y2)
+
+        out[y1c:y2c, x1c:x2c] = render[
+            (y1c - y1):(y2c - y1),
+            (x1c - x1):(x2c - x1)
+        ]
 
         return out

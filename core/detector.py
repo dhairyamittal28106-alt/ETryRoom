@@ -8,6 +8,7 @@ class ETryDetector:
         Provides anchors for Hair, Clothes, and Accessories.
         """
         # Using the standard stable entry point for MediaPipe
+        self.mp_pose = mp.solutions.pose
         self.mp_holistic = mp.solutions.holistic
         self.mp_drawing = mp.solutions.drawing_utils
         

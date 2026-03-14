@@ -1,0 +1,26 @@
+{
+  "manifest_version": 3,
+  "name": "ETryRoom Everywhere",
+  "version": "1.0",
+  "description": "Injects a 3D overlay garment over product images in the DOM, synced via WebSocket to a local physics driver.",
+  "permissions": [
+    "storage",
+    "activeTab"
+  ],
+  "host_permissions": [
+    "<all_urls>"
+  ],
+  "content_scripts": [
+    {
+      "matches": ["<all_urls>"],
+      "js": ["content.js"],
+      "css": ["styles.css"]
+    }
+  ],
+  "web_accessible_resources": [
+    {
+      "resources": ["worker.js"],
+      "matches": ["<all_urls>"]
+    }
+  ]
+}
