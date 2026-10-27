@@ -18,8 +18,8 @@ function toggleMesh() {
         });
 }
 
-// 🔥 Rating fetch kept (backend feature stays alive)
-// ❌ UI injection removed (no overlay anymore)
+
+
 setInterval(() => {
     fetch('/get_rating')
         .then(response => response.json())

@@ -16,16 +16,16 @@ from fastapi.responses import StreamingResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 
-# ---- CORE MODULES ----
+
 from core.detector import ETryDetector
 from core.stylist import ETryStylist
 from core.processor import ETryProcessor
 from core.engine_3d import Engine3D
 from core.pose_mapper import PoseMapper
 
-# --------------------------------------------------
-# APP SETUP
-# --------------------------------------------------
+
+
+
 app = FastAPI()
 
 app.add_middleware(
@@ -38,27 +38,27 @@ app.add_middleware(
 
 app.mount("/static", StaticFiles(directory="static"), name="static")
 
-# --------------------------------------------------
-# ENGINES
-# --------------------------------------------------
+
+
+
 detector = ETryDetector()
 stylist = ETryStylist()
 processor = ETryProcessor()
 engine3d = None
 pose_mapper = None
 
-# --------------------------------------------------
-# GLOBAL STATE
-# --------------------------------------------------
+
+
+
 current_category = "clothes"
 show_mesh = True
 target_image_url = None
 cap = None
 active_connections = set()
 
-# --------------------------------------------------
-# THREADED FRAME BUFFER
-# --------------------------------------------------
+
+
+
 class ThreadedFrameBuffer:
     def __init__(self):
         self.frame = None
@@ -82,7 +82,7 @@ class ThreadedFrameBuffer:
                 continue
             ok, frame = cap.read()
             if not ok:
-                # Hardware-Override Retry Logic: if no frame within 2s, cycle through indices 0-2
+                
                 if time.time() - last_frame_time > 2.0:
                     print("Stream-Recovery: No frame from camera. Cycling through indices 0, 1, 2...")
                     for idx in range(3):
@@ -148,9 +148,9 @@ async def startup_event():
 async def shutdown_event():
     if cap: cap.release()
 
-# --------------------------------------------------
-# ROUTES
-# --------------------------------------------------
+
+
+
 @app.get("/", response_class=HTMLResponse)
 async def index():
     with open("static/index.html") as f: return f.read()
@@ -183,9 +183,9 @@ async def upload_texture(request: Request):
     except Exception as e:
         return JSONResponse({"status": "error", "detail": str(e)}, status_code=500)
 
-# --------------------------------------------------
-# VIDEO PIPELINE
-# --------------------------------------------------
+
+
+
 def generate_frames():
     global target_image_url
     texture_updated = False
@@ -194,7 +194,7 @@ def generate_frames():
     while True:
         loop_start = time.time()
         
-        # 1. Texture-Mapping Pipeline Handshake
+        
         if target_image_url and engine3d and not texture_updated:
             try:
                 engine3d.update_texture(target_image_url)
@@ -202,60 +202,60 @@ def generate_frames():
             except: pass
             
         with frame_buffer.lock:
-            # We copy the frame to ensure the raw feed is preserved for fallback
+            
             raw_camera_frame = frame_buffer.frame.copy() if frame_buffer.frame is not None else None
             results = frame_buffer.results
 
         if raw_camera_frame is None:
-            time.sleep(0.01) # Faster polling for HP Victus camera
+            time.sleep(0.01) 
             continue
 
         frame = raw_camera_frame
         
-        # ---------------- CLOTHES (FIXED BITWISE OVERLAY) ----------------
+        
         if current_category in ["clothes", "Shirts"] and results and results.pose_landmarks:
             try:
                 if engine3d:
-                    # Pose-Coordinate Handshake: Anchor root to Shoulders
+                    
                     body_pose, transl = pose_mapper.map(results.pose_landmarks, frame.shape[1], frame.shape[0])
-                    # RTX 2050 CUDA Physics: Map SMPL-X pose + Translation
+                    
                     render_rgb = engine3d.render_live(body_pose, frame.shape[1], frame.shape[0], transl=transl)
                     
                     if render_rgb is not None:
-                        # 1. CUDA-to-BGR Conversion & Alignment
+                        
                         render_bgr = cv2.cvtColor(render_rgb, cv2.COLOR_RGB2BGR)
                         aligned = engine3d.align_to_body(render_bgr, results.pose_landmarks, frame.shape)
                         
-                        # 2. Luma-Key Alpha Reinforcement: Strict threshold to preserve fabric
+                        
                         gray = cv2.cvtColor(aligned, cv2.COLOR_BGR2GRAY)
                         _, mask = cv2.threshold(gray, 1, 255, cv2.THRESH_BINARY)
                         
-                        # 3. Morphological Dilate: 3x3 kernel to smooth edges and prevent flickering
+                        
                         kernel = np.ones((3, 3), np.uint8)
                         mask = cv2.dilate(mask, kernel, iterations=1)
                         mask_inv = cv2.bitwise_not(mask)
                         
-                        # 4. Binary-Mask Pixel Injection: Cut hole in camera, drop in fabric
-                        # This ensures the shirt is 100% OPAQUE over your body
+                        
+                        
                         img_bg = cv2.bitwise_and(frame, frame, mask=mask_inv)
                         img_fg = cv2.bitwise_and(aligned, aligned, mask=mask)
                         frame = cv2.add(img_bg, img_fg)
                         
-                        # Visual Confirmation of Antigravity Ready State
+                        
                         cv2.putText(frame, "Hardware-Override: Ready", (50, 50), 
                                     cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2)
 
-                        # 5. Mask-Validation Check: If shirt is out of clipping plane, shift Z forward
+                        
                         if cv2.countNonZero(mask) == 0:
                             engine3d.mesh_z += 0.5
                             print(f"Mask-Validation: No pixels detected. Shifting Z to {engine3d.mesh_z}")
                                     
             except Exception as e:
-                # Stream-Recovery: If 3D fails, we stay on the raw_camera_frame
+                
                 print(f"Render Injection Error: {e}")
                 frame = raw_camera_frame
 
-        # Viewport-Scale Correction (480x640) for Shoppers Stop Extension
+        
         frame = cv2.resize(frame, (480, 640))
         ret, buffer = cv2.imencode(".jpg", frame)
         
@@ -264,14 +264,14 @@ def generate_frames():
             
         yield (b"--frame\r\nContent-Type: image/jpeg\r\n\r\n" + buffer.tobytes() + b"\r\n")
         
-        # Lock to 60 FPS for Antigravity Y-axis smoothness
+        
         elapsed = time.time() - loop_start
         wait = (1.0 / 60.0) - elapsed
         if wait > 0:
             time.sleep(wait)
-# --------------------------------------------------
-# STREAM & WEBSOCKET
-# --------------------------------------------------
+
+
+
 @app.get("/video_feed")
 async def video_feed(image_url: str = None):
     """Stream-Recovery Protocol: serves MJPEG. Accepts optional image_url for texture fallback."""

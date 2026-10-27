@@ -7,7 +7,7 @@ class ETryDetector:
         Initializes the ETryRoom tracking engine. 
         Provides anchors for Hair, Clothes, and Accessories.
         """
-        # Using the standard stable entry point for MediaPipe
+        
         self.mp_pose = mp.solutions.pose
         self.mp_holistic = mp.solutions.holistic
         self.mp_drawing = mp.solutions.drawing_utils
@@ -22,7 +22,7 @@ class ETryDetector:
         )
 
     def find_all_anchors(self, frame):
-        # Convert BGR (OpenCV) to RGB (MediaPipe)
+        
         image_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         results = self.holistic.process(image_rgb)
         
@@ -35,7 +35,7 @@ class ETryDetector:
         return anchors, results
 
     def draw_landmarks(self, frame, results):
-        # Draw face mesh for specs and jewelry
+        
         if results.face_landmarks:
             self.mp_drawing.draw_landmarks(
                 frame, 
@@ -44,7 +44,7 @@ class ETryDetector:
                 landmark_drawing_spec=None,
                 connection_drawing_spec=self.mp_drawing.DrawingSpec(color=(0, 255, 0), thickness=1)
             )
-        # Draw pose connections for clothing
+        
         if results.pose_landmarks:
             self.mp_drawing.draw_landmarks(
                 frame, 

@@ -19,7 +19,7 @@ class Engine3D:
         """
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-        # ---------------- 1. SMPL-X MODEL INITIALIZATION ----------------
+        
         self.model = smplx.create(
             model_path=model_path,
             model_type="smplx",
@@ -28,17 +28,17 @@ class Engine3D:
             batch_size=1
         ).to(self.device)
 
-        # ---------------- 2. LOAD SHIRT MESH ----------------
+        
         self.shirt = ClothSkinner("assets/shirts_3d/basic_shirt.obj")
 
-        # ---------------- 3. AUTO UV GENERATION ----------------
+        
         verts = self.shirt.mesh.vertices
         u = (verts[:, 0] - verts[:, 0].min()) / (np.ptp(verts[:, 0]) + 1e-8)
         v = (verts[:, 1] - verts[:, 1].min()) / (np.ptp(verts[:, 1]) + 1e-8)
         uv = np.column_stack([u, v])
         self.shirt.mesh.visual = trimesh.visual.texture.TextureVisuals(uv=uv)
 
-        # ---------------- 4. LOAD INITIAL TEXTURE ----------------
+        
         texture_path = os.path.join(os.path.dirname(__file__), "..", "assets", "shirt.png")
         tex_img = cv2.imread(texture_path)
         if tex_img is None:
@@ -47,8 +47,8 @@ class Engine3D:
         tex_img = cv2.cvtColor(tex_img, cv2.COLOR_BGR2RGB)
         self.shirt_texture = pyrender.Texture(source=tex_img, source_channels="RGB")
 
-        # ---------------- 5. MATERIALS & PBR ----------------
-        # Force OPAQUE to preserve dark navy/white pixels for bitwise injection
+        
+        
         self.cloth_material = pyrender.MetallicRoughnessMaterial(
             baseColorTexture=self.shirt_texture,
             metallicFactor=0.0,
@@ -62,10 +62,10 @@ class Engine3D:
             roughnessFactor=1.0
         )
         
-        # Z-Depth Calibration: Shifted forward from -1.5 to -1.1 to prevent clipping
+        
         self.mesh_z = -1.1 
         
-        # ---------------- 6. PERSISTENT RENDER CONTEXT ----------------
+        
         self.render_queue = queue.Queue()
         self.result_queue = queue.Queue()
         threading.Thread(target=self._render_worker, daemon=True).start()
@@ -83,11 +83,11 @@ class Engine3D:
                 if renderer is None or renderer.viewport_width != w or renderer.viewport_height != h:
                     if renderer is not None: renderer.delete()
                     renderer = pyrender.OffscreenRenderer(w, h)
-                    # Pre-allocated Buffer: Force alignment on HP Victus 15
+                    
                     self._color_buffer = np.zeros((h, w, 3), dtype=np.uint8)
                 
                 color, depth = renderer.render(scene)
-                # Explicit Alignment: Copy into pre-allocated buffer to bypass ctypes handler error
+                
                 np.copyto(self._color_buffer, color)
                 self.result_queue.put((self._color_buffer, depth))
             except Exception as e:
@@ -162,7 +162,7 @@ class Engine3D:
             tx, ty, tz = transl
 
         for m, mat in zip(meshes, materials):
-            # Primary-Mesh Priority Override
+            
             if mat == self.cloth_material:
                 mesh_node = pyrender.Mesh.from_trimesh(m, material=mat, smooth=True)
                 scene.add(mesh_node, pose=np.array([
@@ -172,7 +172,7 @@ class Engine3D:
                     [0, 0, 0, 1]
                 ]))
 
-        # Clipping-Plane Calibration: Boosted YFOV to np.pi / 2.0
+        
         cam = pyrender.PerspectiveCamera(yfov=np.pi / 2.0)
         cam_pose = np.array([
             [1, 0, 0, 0],
@@ -182,7 +182,7 @@ class Engine3D:
         ])
 
         scene.add(cam, pose=cam_pose)
-        # Lighting Boost to 5.0 to prevent fabric from being keyed out
+        
         scene.add(pyrender.DirectionalLight(color=np.ones(3), intensity=5.0), pose=cam_pose)
 
         self.render_queue.put((scene, w, h))

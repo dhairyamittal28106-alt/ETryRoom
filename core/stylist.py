@@ -11,7 +11,7 @@ class ETryStylist:
         ]
 
     def calculate_score(self, skin_tone=None, fit_quality=0.9):
-        # Simplified logic: In production, you'd compare Hex codes
+        
         base_score = random.randint(85, 98) 
         comment = random.choice(self.positive_comments)
         
