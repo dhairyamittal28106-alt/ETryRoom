@@ -1,10 +1,23 @@
 # ETryRoom
 
-ETryRoom is a fashion styling and fit comparison application. It includes a 3D styling avatar, browser camera/photo preview, customer accounts, saved body profiles, seller-entered garment size charts with source links, explainable chest-ease size ranking, saved looks, and a Chrome/Edge shopping importer.
+ETryRoom is a virtual fitting room for trying clothing from product photos and checking size guidance against a saved body profile. It combines a browser based camera preview, an interactive 3D garment studio, a personal wardrobe, fit comparisons, and a Chrome/Edge product image importer.
 
-## Start
+## What it does
 
-Install Python 3.11+ and Node.js LTS, then double-click `Start ETryRoom.bat`. Or run:
+- **Photo try-on:** upload a product photo. A clothing segmentation model runs in the browser and separates the upper garment, trousers, shoes, and outfit where those parts are visible. The original upload is kept so the lower pieces are not lost when the upper garment is selected.
+- **Live camera preview:** pose landmarks align the garment to the shoulders, elbows, hips, and legs. Person segmentation clips the preview to the person. Camera frames and segmentation inference stay on the device.
+- **3D studio:** inspect a garment on an adjustable mannequin and rotate the view.
+- **Wardrobe and saved looks:** keep uploaded products and looks in the browser, with optional signed-in storage on the server.
+- **Size guidance:** compare tape-measured chest, waist, and hip measurements with seller-entered size charts. Each recommendation shows the measurements and ease/range comparisons behind it.
+- **Shopping importer:** import a product image and attempt to read a visible size chart from its product page using the unpacked browser extension.
+
+The camera and 3D views are visual previews. They do not reconstruct a retailer's exact garment pattern, calculate a guaranteed fit, or simulate cloth physics. Sizing depends on the accuracy of the measurements and size chart provided.
+
+## Run locally
+
+Requirements: Python 3.11 or newer and Node.js LTS.
+
+On Windows, run `Start ETryRoom.bat`. Or from PowerShell in the project folder:
 
 ```powershell
 npm ci
@@ -13,24 +26,41 @@ python -m pip install -r requirements-mvp.txt
 python app.py
 ```
 
-Open http://127.0.0.1:8000. The production bundle includes the 3D renderer, pose runtime, WebAssembly, and model. Account and catalog data live in `data/etryroom.sqlite3`; back it up before upgrading or moving the installation.
+Then open [http://127.0.0.1:8000](http://127.0.0.1:8000). For front-end development with Vite, run `npm run dev`; the API server still needs to be running for account and catalog features.
 
-## Run behind HTTPS
+The build copies the MediaPipe pose assets, ONNX Runtime Web files, and the clothing parser model into `static/dist`. Keep these model files in place when building or packaging the application. The first camera use asks the browser for camera access; use `localhost` or HTTPS, allow camera permission, and keep the person and clothing area visible in the frame.
 
-The regular Compose command remains local-only. For a public deployment on a server with DNS pointed at it and inbound ports 80/443 open, copy `.env.example` to `.env`, set the domain and canonical HTTPS URL, configure a transactional SMTP provider, then run `docker compose --profile production up -d --build`. Caddy obtains and renews TLS certificates; the app stays on the private Compose network except for its existing loopback-only port. The backup sidecar makes a consistent SQLite backup once a day and keeps the 14 newest copies in the `etryroom_backups` Docker volume. Backups on the same host do not protect against host loss, so copy them to a separate storage provider and perform restore drills before launch.
+## Try-on workflow
+
+1. Add a product image in the fitting desk or import one with the browser extension.
+2. Check the extracted upper garment and any detected trousers or shoes. The segmentation is a best-effort result; use a clear product image with the complete clothing item against a contrasting background for the cleanest extraction.
+3. Open the camera preview and allow camera access. Face the camera with shoulders and hips in view for the initial alignment. Use the on-screen fit/position controls when the camera angle or pose changes.
+4. Create a fit profile using a tape measure, enter the garment's size chart, and review the explanation before choosing a size.
 
 ## Shopping extension
 
-In Chrome or Edge, enable Developer mode on the Extensions page, select **Load unpacked**, and choose `etry_extension`. Right-click a PNG, JPG, or WebP product image and choose **Try item + detect size chart in ETryRoom**. The extension asks for permission to access that image host; the page itself is read only for this user-initiated action through the temporary `activeTab` permission. It imports the image and page title, then attempts to extract a visible table with chest/bust measurements and, when available, waist and hip data. Check every detected value in the fitting desk before saving; pages with an inaccessible or non-tabular chart still need manual entry. Reload an unpacked extension after updating its files.
+In Chrome or Edge, open the Extensions page, enable **Developer mode**, choose **Load unpacked**, and select `etry_extension`. On a product page, right-click a PNG, JPG, or WebP image and select **Try item + detect size chart in ETryRoom**. The extension imports the image and page title and attempts to read a visible size table. Review every detected chart value before saving; inaccessible or non-tabular charts need manual entry. Reload the unpacked extension after changing its files.
 
-## Size ranking
+## Size comparisons
 
-Create a fit profile using tape-measured chest, waist, and hip circumferences. When adding a source chart, choose whether its values describe the garment or the wearer's body. Garment charts can include chest, waist, and hip circumferences (double flat widths); the fit desk ranks by the selected snug, regular, or relaxed ease preference. Body charts can include minimum and maximum ranges for those dimensions; a recommendation is withheld if the profile is missing a measurement shown in the chart or no size accommodates all measured dimensions. Each result shows the values used, per-size ease or range comparisons, and the source link. Public guides require an HTTPS source link, a product image, and explicit rights confirmation; they remain labeled seller-entered and are not independently verified. Garment length is stored and shown but is not part of the current ranking. Existing chest-only charts and profiles continue to work as one-dimensional comparisons.
+When adding a chart, specify whether its numbers describe the garment or the wearer's body. Garment charts can include chest, waist, and hip circumferences; flat widths should be doubled before entry. Results use the selected snug, regular, or relaxed ease preference. Body charts can include minimum and maximum ranges. The app withholds a recommendation when a required body measurement is missing or no size accommodates the entered measurements. Garment length is recorded but is not part of the current ranking. Chest-only charts and profiles remain supported as one-dimensional comparisons.
 
-Camera pose tracking aligns a perspective-warped garment preview to the wearer's shoulders and hips, then clips it to the on-device person segmentation mask. Frames remain in the browser; this visual preview does not measure body circumference or simulate cloth physics. The 3D studio wraps the shirt over a generic body-shaped garment surface and models sleeves; it does not reconstruct the retailer's exact pattern, drape, or back side. A size result depends on the accuracy of the entered body and garment measurements.
+Public guides require a product image, an HTTPS source link, and rights confirmation. Guides are labeled seller-entered and are not independently verified. Do not treat a result as a guaranteed fit.
 
-## Customer data and release operations
+## Data, accounts, and privacy
 
-Passwords are stored as salted scrypt hashes, sessions use expiring HttpOnly cookies, password reset links are one-use and expire after 30 minutes, and customers can delete their accounts and associated data. Recovery emails require the SMTP settings in `.env`; requests return a generic response to avoid revealing whether an email has an account. The server binds to localhost by default. Uploaded garments, size charts, fit profiles, and saved looks are stored in the local SQLite database. Camera frames stay in the browser.
+Camera frames are processed in the browser and are not uploaded by the live preview. The clothing parser and pose tracking models also run locally in the browser. Uploaded products, charts, fit profiles, and saved looks associated with an account are stored in the server's SQLite database; browser-only wardrobe data stays in that browser. Passwords use salted scrypt hashes, sessions use expiring HttpOnly cookies, and password reset links are one-use and expire after 30 minutes. Password recovery email requires SMTP configuration. Account deletion removes the account and its associated server data.
 
-Before accepting public customers, configure a real domain and HTTPS, move backups off-host and rehearse restores, add verified email delivery, replace the draft privacy policy with reviewed terms and a real business contact, and configure production monitoring/support. The checked-in `basic_shirt.obj` and the original SMPL-X/Pyrender path remain experiments and are not part of this web product.
+For a local run, SQLite data is stored under `data/etryroom.sqlite3`. Back it up before moving or upgrading the installation.
+
+## Deploy with HTTPS
+
+For a public server, point a domain to the host and allow inbound ports 80 and 443. Copy `.env.example` to `.env`, set the domain and canonical HTTPS URL, and configure a transactional SMTP provider. Then start the production profile:
+
+```sh
+docker compose --profile production up -d --build
+```
+
+Caddy obtains and renews TLS certificates. The application is only exposed through the HTTPS proxy in production. The backup service creates a consistent SQLite backup daily and retains the newest 14 copies in the `etryroom_backups` Docker volume. Copy backups to separate storage and rehearse restores; a backup on the same host does not protect against host loss.
+
+Before accepting customers, configure a real domain, test account recovery and restore procedures, review the privacy policy and terms for the business, and set up monitoring and customer support. The checked-in `basic_shirt.obj` and original SMPL-X/Pyrender path are experiments and are not used by the web fitting experience.
