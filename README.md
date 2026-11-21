@@ -64,3 +64,7 @@ docker compose --profile production up -d --build
 Caddy obtains and renews TLS certificates. The application is only exposed through the HTTPS proxy in production. The backup service creates a consistent SQLite backup daily and retains the newest 14 copies in the `etryroom_backups` Docker volume. Copy backups to separate storage and rehearse restores; a backup on the same host does not protect against host loss.
 
 Before accepting customers, configure a real domain, test account recovery and restore procedures, review the privacy policy and terms for the business, and set up monitoring and customer support. The checked-in `basic_shirt.obj` and original SMPL-X/Pyrender path are experiments and are not used by the web fitting experience.
+
+### Vercel
+
+Vercel uses the checked-in `.python-version` (Python 3.12) and root `requirements.txt`, which delegates to the lightweight web dependencies in `requirements-mvp.txt`. The old server-side MediaPipe/3D experiments are optional; camera pose tracking and clothing parsing for the web fitting experience run in the browser. The server currently stores account and catalog data in SQLite, so Vercel's function filesystem is not a durable production database. Connect a persistent database before accepting real customer accounts or catalog data.
