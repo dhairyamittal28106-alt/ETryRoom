@@ -1,6 +1,14 @@
 # Python virtual environments
 .venv/
 venv/
+node_modules/
+dist/
+static/public/
+data/*.sqlite3
+data/*.sqlite3-shm
+data/*.sqlite3-wal
+.env
+backups/
 
 # Python cache
 __pycache__/
@@ -19,3 +27,7 @@ models/
 # OS junk
 .DS_Store
 Thumbs.db
+!static/garment-parser.onnx
+
+!static/models/
+!static/models/pose_landmarker_lite.task

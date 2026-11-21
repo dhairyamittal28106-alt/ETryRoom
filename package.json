@@ -1,0 +1,35 @@
+{
+  "name": "etryroom",
+  "version": "1.0.0",
+  "description": "Fashion styling and fit guidance studio with an interactive WebGL 3D mannequin, a wardrobe, product image uploads, camera and photo styling previews, browser saved looks, and a Chrome/Edge shopping image importer.",
+  "main": "index.js",
+  "directories": {
+    "test": "tests"
+  },
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "build": "vite build",
+    "dev": "vite --host 127.0.0.1",
+    "start": "python app.py"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/dhairyamittal28106-alt/ETryRoom.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "module",
+  "bugs": {
+    "url": "https://github.com/dhairyamittal28106-alt/ETryRoom/issues"
+  },
+  "homepage": "https://github.com/dhairyamittal28106-alt/ETryRoom#readme",
+  "dependencies": {
+    "@mediapipe/tasks-vision": "^0.10.32",
+    "onnxruntime-web": "^1.22.0",
+    "three": "^0.180.0"
+  },
+  "devDependencies": {
+    "vite": "^8.3.8"
+  }
+}

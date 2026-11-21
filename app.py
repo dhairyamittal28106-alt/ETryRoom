@@ -1,51 +1,93 @@
-import cv2
 import uvicorn
 import threading
 import time
 import asyncio
-import numpy as np
-import asyncio
 import sys
+import os
 
 if sys.platform == 'win32':
     asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
 import base64
 from pathlib import Path
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request
-from fastapi.responses import StreamingResponse, HTMLResponse, JSONResponse
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException
+from pydantic import BaseModel, Field
+from fastapi.responses import StreamingResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
-from fastapi.middleware.cors import CORSMiddleware
 
 # ---- CORE MODULES ----
-from core.detector import ETryDetector
 from core.stylist import ETryStylist
-from core.processor import ETryProcessor
-from core.engine_3d import Engine3D
-from core.pose_mapper import PoseMapper
+from core.store import init_store, router as product_api
+runtime_error = None
+LEGACY_CAMERA_SERVER_ENABLED = os.getenv("ETRYROOM_ENABLE_LEGACY_CAMERA_SERVER", "0") == "1"
+try:
+    import cv2
+    import numpy as np
+    from core.detector import ETryDetector
+    from core.engine_3d import Engine3D
+    from core.pose_mapper import PoseMapper
+except ImportError as exc:
+    runtime_error = str(exc)
 
 # --------------------------------------------------
 # APP SETUP
 # --------------------------------------------------
 app = FastAPI()
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+ROOT = Path(__file__).resolve().parent
+WEB_ROOT = ROOT / "dist" if (ROOT / "dist" / "index.html").exists() else ROOT / "static"
+app.mount("/static", StaticFiles(directory=WEB_ROOT), name="static")
+app.mount("/assets", StaticFiles(directory=ROOT / "assets"), name="assets")
+if (WEB_ROOT / "vision-wasm").exists():
+    app.mount("/vision-wasm", StaticFiles(directory=WEB_ROOT / "vision-wasm"), name="vision-wasm")
+if (WEB_ROOT / "models").exists():
+    app.mount("/models", StaticFiles(directory=WEB_ROOT / "models"), name="models")
+app.include_router(product_api)
 
-app.mount("/static", StaticFiles(directory="static"), name="static")
+@app.middleware("http")
+async def security_headers(request, call_next):
+    response = await call_next(request)
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+    response.headers["X-Frame-Options"] = "DENY"
+    response.headers["Permissions-Policy"] = "camera=(self), microphone=()"
+    response.headers["Content-Security-Policy"] = "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self'; font-src 'self' data:; media-src 'self' blob:; worker-src 'self' blob:; frame-ancestors 'none'; base-uri 'self'; form-action 'self'"
+    return response
 
 # --------------------------------------------------
 # ENGINES
 # --------------------------------------------------
-detector = ETryDetector()
+detector = None
 stylist = ETryStylist()
-processor = ETryProcessor()
 engine3d = None
 pose_mapper = None
+engine_lock = threading.Lock()
+engine_error = None
+physics_task = None
+
+
+def ensure_engine():
+    global engine3d, pose_mapper, engine_error
+    if runtime_error:
+        raise HTTPException(503, "The experimental 3D runtime is not installed. Use the browser fitting studio.")
+    with engine_lock:
+        if engine3d is None:
+            try:
+                engine = Engine3D(model_path=str(ROOT / "models" / "smplx"))
+                mapper = PoseMapper(engine.device)
+                engine3d, pose_mapper = engine, mapper
+                engine_error = None
+            except Exception as exc:
+                engine_error = str(exc)
+                raise HTTPException(503, "Shirt renderer unavailable. Check model files and 3D dependencies.") from exc
+
+
+def require_legacy_camera_server():
+    if not LEGACY_CAMERA_SERVER_ENABLED:
+        raise HTTPException(404, "This legacy server-camera endpoint is disabled. Use browser camera mode in the fitting studio.")
+
+
+class TextureUpload(BaseModel):
+    image_data: str = Field(min_length=1, max_length=7_000_000)
 
 # --------------------------------------------------
 # GLOBAL STATE
@@ -67,10 +109,20 @@ class ThreadedFrameBuffer:
         self.running = False
         self.fps = 60.0
         self.last_mp_time = 0
+        self.thread = None
 
     def start(self):
-        self.running = True
-        threading.Thread(target=self._loop, daemon=True).start()
+        with self.lock:
+            if self.running:
+                return
+            self.running = True
+            self.thread = threading.Thread(target=self._loop, daemon=True)
+            self.thread.start()
+
+    def stop(self):
+        self.running = False
+        if self.thread:
+            self.thread.join(timeout=3)
 
     def _loop(self):
         global cap
@@ -133,55 +185,108 @@ async def physics_loop():
 
 @app.on_event("startup")
 async def startup_event():
-    global cap
+    global physics_task
+    init_store()
+    physics_task = asyncio.create_task(physics_loop())
+    if runtime_error:
+        return
+
+@app.post("/camera/start")
+def start_server_camera():
+    global cap, detector
+    require_legacy_camera_server()
+    if runtime_error:
+        raise HTTPException(503, "The experimental 3D runtime is not installed. Use browser camera mode.")
+    if cap is not None and cap.isOpened():
+        return {"status": "success"}
+    if detector is None:
+        detector = ETryDetector()
     for i in range(3):
         test_cap = cv2.VideoCapture(i)
         if test_cap.isOpened():
             ret, _ = test_cap.read()
             if ret:
                 cap = test_cap
-                asyncio.create_task(physics_loop())
-                return
-            test_cap.release()
+                return {"status": "success"}
+        test_cap.release()
+    raise HTTPException(503, "No webcam available for the experimental 3D renderer.")
 
 @app.on_event("shutdown")
 async def shutdown_event():
+    frame_buffer.stop()
     if cap: cap.release()
+    if physics_task:
+        physics_task.cancel()
+        try:
+            await physics_task
+        except asyncio.CancelledError:
+            pass
 
 # --------------------------------------------------
 # ROUTES
 # --------------------------------------------------
 @app.get("/", response_class=HTMLResponse)
 async def index():
-    with open("static/index.html") as f: return f.read()
+    return (WEB_ROOT / "index.html").read_text(encoding="utf-8")
+
+@app.get("/privacy", response_class=HTMLResponse)
+async def privacy():
+    return (ROOT / "static" / "privacy.html").read_text(encoding="utf-8")
+
+@app.get("/healthz")
+def healthz():
+    return {"status": "ok", "product": "etryroom"}
+
+@app.get("/status")
+def status():
+    return {"camera_ready": cap is not None and cap.isOpened(),
+            "engine_ready": engine3d is not None, "engine_error": engine_error,
+            "runtime_available": runtime_error is None,
+            "category": current_category, "show_mesh": show_mesh}
+
+@app.get("/toggle_mesh")
+def toggle_mesh():
+    global show_mesh
+    require_legacy_camera_server()
+    show_mesh = not show_mesh
+    return {"show_mesh": show_mesh}
 
 @app.get("/change_category")
-async def change_category(name: str):
-    global current_category, engine3d, pose_mapper
-    current_category = name
-    if name in ["clothes", "Shirts"] and engine3d is None:
-        engine3d = Engine3D()
-        pose_mapper = PoseMapper(engine3d.device)
-    return {"status": "success"}
+def change_category(name: str):
+    global current_category
+    require_legacy_camera_server()
+    category = {"Shirts": "clothes"}.get(name, name)
+    if category not in ("clothes", "camera"):
+        raise HTTPException(400, "Supported categories: clothes, camera. Accessories and hair are not implemented yet.")
+    if category == "clothes":
+        ensure_engine()
+    current_category = category
+    return {"status": "success", "category": category}
 
 @app.get("/get_rating")
-async def get_rating(): return stylist.calculate_score()
+async def get_rating():
+    require_legacy_camera_server()
+    raise HTTPException(501, "Automated fit scoring is not implemented.")
 
 @app.post("/upload_texture")
-async def upload_texture(request: Request):
-    global engine3d
+def upload_texture(body: TextureUpload):
+    require_legacy_camera_server()
     try:
-        body = await request.json()
-        b64_data = body.get("image_data", "")
+        b64_data = body.image_data
         if "," in b64_data:
             b64_data = b64_data.split(",", 1)[1]
-        img_bytes = base64.b64decode(b64_data)
-        if engine3d is not None:
+        img_bytes = base64.b64decode(b64_data, validate=True)
+    except ValueError as exc:
+        raise HTTPException(400, "Invalid base64 image data.") from exc
+    if not img_bytes:
+        raise HTTPException(400, "Image is empty.")
+    ensure_engine()
+    try:
+        with engine_lock:
             engine3d.update_texture_from_bytes(img_bytes)
-            return JSONResponse({"status": "success"})
-        return JSONResponse({"status": "engine_not_ready"}, status_code=503)
-    except Exception as e:
-        return JSONResponse({"status": "error", "detail": str(e)}, status_code=500)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    return {"status": "success"}
 
 # --------------------------------------------------
 # VIDEO PIPELINE
@@ -191,13 +296,14 @@ def generate_frames():
     texture_updated = False
     if not frame_buffer.running: frame_buffer.start()
         
-    while True:
+    while frame_buffer.running:
         loop_start = time.time()
         
         # 1. Texture-Mapping Pipeline Handshake
         if target_image_url and engine3d and not texture_updated:
             try:
-                engine3d.update_texture(target_image_url)
+                with engine_lock:
+                    engine3d.update_texture(target_image_url)
                 texture_updated = True
             except: pass
             
@@ -213,18 +319,17 @@ def generate_frames():
         frame = raw_camera_frame
         
         # ---------------- CLOTHES (FIXED BITWISE OVERLAY) ----------------
-        if current_category in ["clothes", "Shirts"] and results and results.pose_landmarks:
+        if show_mesh and current_category in ["clothes", "Shirts"] and results and results.pose_landmarks:
             try:
                 if engine3d:
                     # Pose-Coordinate Handshake: Anchor root to Shoulders
-                    body_pose, transl = pose_mapper.map(results.pose_landmarks, frame.shape[1], frame.shape[0])
-                    # RTX 2050 CUDA Physics: Map SMPL-X pose + Translation
-                    render_rgb = engine3d.render_live(body_pose, frame.shape[1], frame.shape[0], transl=transl)
+                    with engine_lock:
+                        body_pose, transl = pose_mapper.map(results.pose_landmarks, frame.shape[1], frame.shape[0])
+                        render_rgb = engine3d.render_live(body_pose, frame.shape[1], frame.shape[0], transl=transl)
                     
                     if render_rgb is not None:
                         # 1. CUDA-to-BGR Conversion & Alignment
-                        render_bgr = cv2.cvtColor(render_rgb, cv2.COLOR_RGB2BGR)
-                        aligned = engine3d.align_to_body(render_bgr, results.pose_landmarks, frame.shape)
+                        aligned = engine3d.align_to_body(render_rgb, results.pose_landmarks, frame.shape)
                         
                         # 2. Luma-Key Alpha Reinforcement: Strict threshold to preserve fabric
                         gray = cv2.cvtColor(aligned, cv2.COLOR_BGR2GRAY)
@@ -256,7 +361,7 @@ def generate_frames():
                 frame = raw_camera_frame
 
         # Viewport-Scale Correction (480x640) for Shoppers Stop Extension
-        frame = cv2.resize(frame, (480, 640))
+        # Preserve the camera aspect ratio; the browser fits the stream into its viewport.
         ret, buffer = cv2.imencode(".jpg", frame)
         
         if not ret:
@@ -273,9 +378,14 @@ def generate_frames():
 # STREAM & WEBSOCKET
 # --------------------------------------------------
 @app.get("/video_feed")
-async def video_feed(image_url: str = None):
+def video_feed(image_url: str = None):
     """Stream-Recovery Protocol: serves MJPEG. Accepts optional image_url for texture fallback."""
     global target_image_url
+    require_legacy_camera_server()
+    if cap is None or not cap.isOpened():
+        raise HTTPException(503, "No camera found. Connect a webcam and restart ETryRoom.")
+    if current_category == "clothes":
+        ensure_engine()
     if image_url:
         target_image_url = image_url
     return StreamingResponse(generate_frames(), media_type="multipart/x-mixed-replace; boundary=frame")
@@ -283,6 +393,9 @@ async def video_feed(image_url: str = None):
 @app.websocket("/ws/physics")
 async def websocket_physics(websocket: WebSocket):
     """Y-axis work V_y = V_y + 0.05 * sin(1.5 * t) broadcast at 60 FPS."""
+    if not LEGACY_CAMERA_SERVER_ENABLED:
+        await websocket.close(code=1008, reason="Legacy server-side renderer is disabled")
+        return
     await websocket.accept()
     active_connections.add(websocket)
     try:

@@ -1,40 +1,319 @@
-function changeCat(category) {
-    console.log("Switching to category:", category);
-
-    fetch(`/change_category?name=${category}`)
-        .then(response => response.json())
-        .then(data => {
-            updateButtonUI(category);
-        });
+import {fitFromPose,containRect,smoothFit,offsetFit} from './geometry.mjs';
+import('./fit3d.js').catch(()=>toast('Could not load the 3D studio. Check the local build assets.'));
+const $=id=>document.getElementById(id),canvas=$('mirrorCanvas'),ctx=canvas.getContext('2d'),video=$('cameraVideo'),W=canvas.width,H=canvas.height;
+const garmentLayer=document.createElement('canvas');garmentLayer.width=W;garmentLayer.height=H;const garmentCtx=garmentLayer.getContext('2d');
+const armMaskCanvas=document.createElement('canvas');armMaskCanvas.width=W;armMaskCanvas.height=H;const armMaskContext=armMaskCanvas.getContext('2d');
+const armFrameCanvas=document.createElement('canvas');armFrameCanvas.width=W;armFrameCanvas.height=H;const armFrameContext=armFrameCanvas.getContext('2d');
+let bodyMaskCanvas=null,bodyMaskContext=null,bodyMaskImage=null;
+const svg=(c,s)=>'data:image/svg+xml;charset=utf-8,'+encodeURIComponent(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 400 460"><path d="M140 35Q200 80 260 35L330 70 390 165 320 205 300 435Q200 460 100 435L80 205 10 165 70 70Z" fill="${c}" stroke="${s}" stroke-width="5"/><path d="M140 35Q200 95 260 35L245 30Q200 67 155 30Z" fill="${s}"/></svg>`);
+const defaults=[{id:'tee',name:'Everyday tee',type:'Cotton / warm ivory',src:svg('#e9e0cb','#c7bba4')},{id:'sage',name:'Sage essential',type:'Cotton / soft olive',src:svg('#929b7e','#6d795d')},{id:'night',name:'After hours',type:'Long sleeve / charcoal',src:svg('#424949','#293232')},{id:'original',name:'The original ET',type:'Long sleeve / Original ET',src:'/assets/shirt.png'}];
+const garmentTypeLabels={tshirt:'T-shirt',long_sleeve:'Long sleeve',polo:'Polo',hoodie:'Hoodie',sweater:'Sweater',outerwear:'Jacket / outerwear'};
+function inferGarmentType(text){const value=(text||'').toLowerCase();if(/hoodie|sweatshirt/.test(value))return 'hoodie';if(/long[ -]sleeve|full[ -]sleeve/.test(value))return 'long_sleeve';if(/jacket|coat|blazer|outerwear/.test(value))return 'outerwear';if(/sweater|knit|cardigan/.test(value))return 'sweater';if(/\bpolo\b/.test(value))return 'polo';return 'tshirt';}
+const s={pieces:[...defaults],selected:defaults[0],img:null,source:'demo',photo:null,stream:null,mirror:true,visible:true,scale:1,x:0,y:0,rot:0,pose:null,track:false,looks:[],filter:'all',lastDetection:0,lastVideoTime:-1,account:null,profiles:[],garments:[],catalog:[],activeGarment:null};let tracker=null,trackingTask=null,timer,authMode='login',pendingResetToken='';
+async function api(path,options={}){const response=await fetch(path,{...options,credentials:'same-origin',headers:{'Content-Type':'application/json',...(options.headers||{})}});if(response.status===204)return null;const data=await response.json();if(!response.ok)throw Error(data.detail||'Request failed.');return data;}
+function db(){return new Promise((ok,no)=>{const r=indexedDB.open('etryroom',1);r.onupgradeneeded=()=>{r.result.createObjectStore('pieces',{keyPath:'id'});r.result.createObjectStore('looks',{keyPath:'id'});};r.onsuccess=()=>ok(r.result);r.onerror=()=>no(r.error);});}
+async function store(table,op,val){const d=await db();return new Promise((ok,no)=>{const t=d.transaction(table,op==='getAll'?'readonly':'readwrite'),r=t.objectStore(table)[op](val);t.oncomplete=()=>ok(r.result);t.onerror=()=>no(t.error);});}
+function toast(t){$('toast').textContent=t;$('toast').hidden=false;clearTimeout(timer);timer=setTimeout(()=>$('toast').hidden=true,5000);}
+function load(src){return new Promise((ok,no)=>{const i=new Image();i.onload=()=>ok(i);i.onerror=()=>no(Error('Could not open this image.'));i.src=src;});}
+function cutBackground(image){const c=document.createElement('canvas'),ratio=Math.min(1,1200/Math.max(image.width,image.height));c.width=Math.max(1,Math.round(image.width*ratio));c.height=Math.max(1,Math.round(image.height*ratio));const x=c.getContext('2d',{willReadFrequently:true});x.drawImage(image,0,0,c.width,c.height);const w=c.width,h=c.height,p=x.getImageData(0,0,w,h),d=p.data,seen=new Uint8Array(w*h),q=new Int32Array(w*h),edge=[[],[],[]],step=Math.max(1,Math.floor(Math.max(w,h)/180));for(let a=0;a<w;a+=step){for(const i of [a,(h-1)*w+a]){const o=i*4;for(let k=0;k<3;k++)edge[k].push(d[o+k]);}}for(let a=0;a<h;a+=step){for(const i of [a*w,a*w+w-1]){const o=i*4;for(let k=0;k<3;k++)edge[k].push(d[o+k]);}}const median=a=>{a.sort((m,n)=>m-n);return a[a.length>>1]||255;},bg=edge.map(median),threshold=52*52;let head=0,tail=0;function add(i){if(i<0||i>=w*h||seen[i])return;seen[i]=1;const o=i*4,dr=d[o]-bg[0],dg=d[o+1]-bg[1],db=d[o+2]-bg[2];if(dr*dr+dg*dg+db*db<threshold&&d[o+3]>8)q[tail++]=i;}for(let a=0;a<w;a++){add(a);add((h-1)*w+a);}for(let a=0;a<h;a++){add(a*w);add(a*w+w-1);}while(head<tail){const i=q[head++];d[i*4+3]=0;if(i%w)add(i-1);if(i%w<w-1)add(i+1);if(i>=w)add(i-w);if(i<w*(h-1))add(i+w);}x.putImageData(p,0,0);let minX=w,minY=h,maxX=-1,maxY=-1;for(let y=0;y<h;y++)for(let xx=0;xx<w;xx++)if(d[(y*w+xx)*4+3]>20){minX=Math.min(minX,xx);maxX=Math.max(maxX,xx);minY=Math.min(minY,y);maxY=Math.max(maxY,y);}if(maxX<minX||maxY<minY)return c;const pad=Math.max(3,Math.round(Math.max(maxX-minX,maxY-minY)*.025));minX=Math.max(0,minX-pad);minY=Math.max(0,minY-pad);maxX=Math.min(w-1,maxX+pad);maxY=Math.min(h-1,maxY+pad);const trimmed=document.createElement('canvas');trimmed.width=maxX-minX+1;trimmed.height=maxY-minY+1;trimmed.getContext('2d').drawImage(c,minX,minY,trimmed.width,trimmed.height,0,0,trimmed.width,trimmed.height);return trimmed;}
+function wardrobe(){const q=$('searchInput').value.toLowerCase(),g=$('garmentGrid');g.replaceChildren();$('wardrobeCount').textContent=s.pieces.length;for(const p of s.pieces.filter(p=>(s.filter!=='mine'||p.custom)&&p.name.toLowerCase().includes(q))){const b=document.createElement('button');b.className='garment-card'+(p.id===s.selected.id?' selected':'');const box=document.createElement('div');box.className='garment-image';const im=new Image();im.src=p.outfitSrc||p.extractedSrc||p.src;box.append(im);const n=document.createElement('strong');n.textContent=p.name;const t=document.createElement('small');t.textContent=p.custom?'Your upload':p.type;b.append(box,n,t);b.onclick=()=>select(p);g.append(b);}}
+let selectionVersion=0;
+async function select(p){
+ const version=++selectionVersion;
+ try{
+  const image=await load(p.outfitVersion===2?p.extractedSrc:p.src);
+  let garment=image;
+  if(p.custom&&p.outfitVersion!==2){
+   toast('Extracting the garment on this device…');
+   const {extractOutfit}=await import('./garment-parser.js');
+   const parts=await extractOutfit(image);
+   garment=parts.upper;
+   p.pantsSrc=parts.pants?.toDataURL();
+   p.shoesSrc=parts.shoes?.toDataURL();
+   p.outfitSrc=parts.outfit.toDataURL();
+   p.outfitVersion=2;
+   p.extractedSrc=garment.toDataURL('image/png');
+   await store('pieces','put',p);
+  }else if(p.id==='original')garment=cutBackground(image);
+  const lower=await Promise.all([p.pantsSrc,p.shoesSrc].map(src=>src?load(src):null));
+  if(version!==selectionVersion)return false;
+  s.lower=lower;window.ETry3D?.setLower(...lower);
+  s.img=garment;s.selected=p;if(window.ETry3D)window.ETry3D.setTexture(s.img,p.type,p.id);$('selectedName').textContent=p.name;$('selectedType').textContent=p.type;$('selectedThumb').replaceChildren(Object.assign(new Image(),{src:p.outfitSrc||p.src}));$('removeBtn').hidden=!p.custom;wardrobe();return true;}catch(e){if(version===selectionVersion)toast(e.message);return false;}}
+function model(){const g=ctx.createLinearGradient(0,0,W,H);g.addColorStop(0,'#eef0e6');g.addColorStop(1,'#dce2cf');ctx.fillStyle=g;ctx.fillRect(0,0,W,H);ctx.fillStyle='#d6bfa7';ctx.beginPath();ctx.ellipse(360,185,62,83,0,0,7);ctx.fill();ctx.beginPath();ctx.moveTo(325,255);ctx.quadraticCurveTo(230,270,215,330);ctx.lineTo(175,575);ctx.quadraticCurveTo(180,620,210,600);ctx.lineTo(270,400);ctx.lineTo(260,610);ctx.quadraticCurveTo(360,640,460,610);ctx.lineTo(450,400);ctx.lineTo(510,600);ctx.quadraticCurveTo(545,620,545,575);ctx.lineTo(505,330);ctx.quadraticCurveTo(490,270,395,255);ctx.closePath();ctx.fill();ctx.fillStyle='#999f8b';ctx.fillRect(278,610,62,215);ctx.fillRect(380,610,62,215);}
+// Build pose-independent fabric panels once per selected image.
+const patternCache=new WeakMap();
+function pattern(image,kind){
+ if(patternCache.has(image))return patternCache.get(image);
+ const c=document.createElement('canvas');c.width=256;c.height=320;
+ const ctx=c.getContext('2d',{willReadFrequently:true});ctx.drawImage(image,0,0,256,320);
+ const rgba=ctx.getImageData(0,0,256,320).data;
+ const solid=(x,y)=>rgba[(y*256+x)*4+3]>128;
+ const spans=[];
+ for(let y=0;y<320;y++){
+  const runs=[];let start=-1;
+  for(let x=0;x<=256;x++){
+   if(x<256&&solid(x,y)){if(start<0)start=x;}
+   else if(start>=0){if(x-start>3)runs.push([start,x]);start=-1;}
+  }
+  spans.push(runs);
+ }
+ function central(y){
+  return spans[y].reduce((best,r)=>Math.abs((r[0]+r[1])/2-128)<Math.abs((best[0]+best[1])/2-128)?r:best,[-999,-999]);
+ }
+ const hem=central(280),middle=hem[0]>=0?(hem[0]+hem[1])/2:128;
+ const half=Math.max(42,Math.min(88,(hem[1]-hem[0])/2||80));
+ const panel=()=>{const v=document.createElement('canvas');v.width=128;v.height=320;return v;};
+ const body=panel(),sleeves=[panel(),panel()],legs=[panel(),panel()];
+ const bodyCtx=body.getContext('2d');
+ for(let y=0;y<320;y++){
+  const span=y<95&&spans[y].length?[spans[y][0][0],spans[y].at(-1)[1]]:central(y);
+  if(span[0]>=0){
+   const x=Math.max(span[0],middle-half),right=Math.min(span[1],middle+half);
+   if(right>x)bodyCtx.drawImage(c,x,y,right-x,1,(x-middle+half)*64/half,y,(right-x)*64/half,1);
+  }
+  for(let side=0;side<2;side++){
+   const runs=spans[y];if(!runs.length)continue;
+   let [lo,hi]=runs[side?runs.length-1:0];
+   if(runs.length===1){const mid=(lo+hi)/2;if(side)lo=mid;else hi=mid;}
+   legs[side].getContext('2d').drawImage(c,lo,y,hi-lo,1,0,y,128,1);
+  }
+ }
+ const ends=[];
+ for(let side=0;side<2;side++){
+  const bounds=[];
+  for(let x=12;x<51;x++){const col=side?255-x:x;let lo=0,hi=319;
+   while(lo<hi&&!solid(col,lo))lo++;while(hi>lo&&!solid(col,hi))hi--;
+   if(hi-lo>12)bounds.push([col,lo,hi]);}
+  ends.push(bounds.length?bounds.map(v=>v[2]).sort((a,b)=>a-b)[bounds.length>>1]:140);
+  const sc=sleeves[side].getContext('2d');
+  for(let x=0;x<128&&bounds.length;x++){const [col,lo,hi]=bounds[Math.min(bounds.length-1,Math.floor(x*bounds.length/128))];// A bent source arm can leave background gaps in this column.
+   const occupied=[];
+   for(let y=lo;y<=hi;y++)if(solid(col,y))occupied.push(y);
+   for(let y=0;y<320;y++){
+    const sample=occupied[Math.floor(y*occupied.length/320)];
+    sc.drawImage(c,col,sample,1,1,x,y,1,1);
+   }}
+ }
+ const result={body,sleeves,legs,long:Math.max(...ends)>225};
+ patternCache.set(image,result);return result;
 }
-
-function toggleMesh() {
-    fetch('/toggle_mesh')
-        .then(response => response.json())
-        .then(data => {
-            const btn = document.getElementById('meshBtn');
-            btn.innerText = data.show_mesh ? "Hide Mesh" : "Show Mesh";
-            btn.style.background = data.show_mesh ? "#ff4444" : "#44bbff";
-        });
+function point(fit,side,joint){
+ const x=fit[side+joint+'X'],y=fit[side+joint+'Y'];
+ return Number.isFinite(x)&&Number.isFinite(y)?{x,y}:null;
 }
-
-// 🔥 Rating fetch kept (backend feature stays alive)
-// ❌ UI injection removed (no overlay anymore)
-setInterval(() => {
-    fetch('/get_rating')
-        .then(response => response.json())
-        .then(data => {
-            console.log("AI Rating:", data);
-        })
-        .catch(err => console.error("Error fetching rating:", err));
-}, 2000);
-
-function updateButtonUI(activeCat) {
-    const buttons = document.querySelectorAll('.category-bar button');
-    buttons.forEach(btn => {
-        btn.style.background =
-            btn.innerText.toLowerCase().includes(activeCat.substring(0, 3))
-                ? '#00ff88'
-                : '#007bff';
-    });
+function mixPoint(a,b,t){return {x:a.x+(b.x-a.x)*t,y:a.y+(b.y-a.y)*t};}
+function segment(ctx,img,a,b,w0,w1,t0=0,t1=1){
+ const dx=b.x-a.x,dy=b.y-a.y,length=Math.hypot(dx,dy);
+ if(length<1)return;
+ ctx.save();ctx.translate(a.x,a.y);ctx.rotate(Math.atan2(-dx,dy));
+ const rows=Math.min(90,Math.ceil(length));
+ for(let i=0;i<rows;i++){const t=i/rows,width=w0+(w1-w0)*t;
+  ctx.drawImage(img,0,img.height*(t0+(t1-t0)*t),img.width,img.height*(t1-t0)/rows,-width/2,length*t,width,length/rows+.65);}
+ ctx.restore();
 }
+function drawWarpedGarment(image,f,ctx){
+ const cloth=pattern(image,'upper'),span=f.shoulderWidth;
+ const L=point(f,'left','Shoulder'),R=point(f,'right','Shoulder'),H=point(f,'left','Hip'),J=point(f,'right','Hip');
+ const shoulders=mixPoint(L,R,.5),hips=mixPoint(H,J,.5),height=Math.hypot(hips.x-shoulders.x,hips.y-shoulders.y);
+ const neck=mixPoint(shoulders,hips,-.215),hem=mixPoint(shoulders,hips,1.13);
+ const lower=s.lower||[];
+ ctx.save();ctx.translate(f.x+s.x,f.y+s.y);ctx.rotate(s.rot*Math.PI/180);ctx.scale(s.scale,s.scale);ctx.translate(-f.x,-f.y);
+ for(const [index,side] of ['left','right'].entries()){
+  const hip=index?J:H,shoulder=index?R:L;
+  const knee=point(f,side,'Knee')||{x:hip.x,y:hip.y+height*.96};
+  const ankle=point(f,side,'Ankle'),end=ankle||mixPoint(hip,knee,2);
+  if(lower[0]){
+   const fabric=pattern(lower[0],'pants').legs[index],legWidth=Math.max(span*.64,Math.abs(J.x-H.x)*1.05);
+   segment(ctx,fabric,mixPoint(hip,knee,-.18),knee,legWidth,legWidth*.79,0,.54);
+   segment(ctx,fabric,knee,end,legWidth*.79,legWidth*.7,.54,1);
+  }
+  if(lower[1]&&ankle){const toe=point(f,side,'Toe');if(toe)segment(ctx,pattern(lower[1],'shoe').legs[index],ankle,toe,span*.20,span*.23);}
+  const elbow=point(f,side,'Elbow')||{x:shoulder.x+(index?1:-1)*span*.15,y:shoulder.y+height*.56};
+  const wrist=point(f,side,'Wrist')||mixPoint(shoulder,elbow,1.9);
+  // Seat the sleeve cap toward the neck even when the upper arm lifts.
+  const start=mixPoint(shoulder,neck,.19);
+  start.y-=span*.035;
+  const fabric=cloth.sleeves[index];
+  if(cloth.long){segment(ctx,fabric,start,mixPoint(start,elbow,1.065),span*.46,span*.33,0,.55);segment(ctx,fabric,elbow,wrist,span*.31,span*.23,.55,1);}
+  else segment(ctx,fabric,start,mixPoint(shoulder,elbow,.68),span*.46,span*.34);
+ }
+ const width=Math.max(span*1.34,height*.78,f.chestWidth||0);
+ // Interpolate both the tilt and width between the shoulder and hip lines.
+ const hipAngle=Math.atan2(J.y-H.y,J.x-H.x);
+ const hemWidth=Math.max(width*.94,Math.hypot(J.x-H.x,J.y-H.y)*1.52);
+ const rows=Math.max(16,Math.min(160,Math.ceil(height)));
+ for(let row=0;row<rows;row++){
+  const t=row/rows,center=mixPoint(neck,hem,t);
+  const angle=f.angle*(1-t)+hipAngle*t;
+  const chest=Math.min(1,t/.12),slope=.78+.22*Math.sin(chest*Math.PI/2);
+  const girth=(width*(1-t)+hemWidth*t)*slope;
+  ctx.save();ctx.translate(center.x,center.y);ctx.rotate(angle);
+  ctx.drawImage(cloth.body,0,t*cloth.body.height,cloth.body.width,cloth.body.height/rows,
+    -girth/2,0,girth,Math.hypot(hem.x-neck.x,hem.y-neck.y)/rows+1);
+  ctx.restore();
+ }
+ // A bent forearm crossing the chest must be drawn in front of the torso.
+ if(cloth.long)for(const [i,side] of ['left','right'].entries()){
+  const elbow=point(f,side,'Elbow'),wrist=point(f,side,'Wrist');
+  if(elbow&&wrist&&wrist.x>L.x&&wrist.x<R.x&&wrist.y<hem.y&&wrist.y>neck.y)
+   segment(ctx,cloth.sleeves[i],elbow,wrist,span*.31,span*.23,.55,1);
+ }
+ ctx.restore();
+}
+function updateBodyMask(mask){
+ if(!mask){s.bodyMask=null;return;}
+ const pixels=mask.getAsFloat32Array(),w=mask.width,h=mask.height;
+ if(!bodyMaskCanvas||bodyMaskCanvas.width!==w||bodyMaskCanvas.height!==h){bodyMaskCanvas=document.createElement('canvas');bodyMaskCanvas.width=w;bodyMaskCanvas.height=h;bodyMaskContext=bodyMaskCanvas.getContext('2d');bodyMaskImage=bodyMaskContext.createImageData(w,h);}
+ const data=bodyMaskImage.data;
+ for(let i=0;i<pixels.length;i++){const a=Math.max(0,Math.min(255,Math.round((pixels[i]-.18)*420)));data[i*4]=255;data[i*4+1]=255;data[i*4+2]=255;data[i*4+3]=a;}
+ bodyMaskContext.putImageData(bodyMaskImage,0,0);s.bodyMask=bodyMaskCanvas;
+}
+// Sample broad illumination from the already mirrored camera frame before
+// compositing. A small luminance map suppresses logos on the original shirt.
+const lightMap=document.createElement('canvas');
+lightMap.width=48;lightMap.height=60;
+const lightCtx=lightMap.getContext('2d',{willReadFrequently:true});
+let lastLightTime=-Infinity;
+function lightFabric(fit){
+ if(performance.now()-lastLightTime>95){
+  lightCtx.drawImage(canvas,0,0,lightMap.width,lightMap.height);
+  const sample=lightCtx.getImageData(0,0,lightMap.width,lightMap.height),data=sample.data;
+  const luma=i=>data[i]*.2126+data[i+1]*.7152+data[i+2]*.0722;
+  const values=[];
+  for(let y=-1;y<=1;y++)for(let x=-1;x<=1;x++){
+   const px=Math.max(0,Math.min(47,Math.round((fit.x+x*fit.shoulderWidth*.22)*48/W)));
+   const py=Math.max(0,Math.min(59,Math.round((fit.y+y*fit.shoulderWidth*.17)*60/H)));
+   values.push(luma((py*48+px)*4));
+  }
+  const base=values.sort((a,b)=>a-b)[4];
+  for(let i=0;i<data.length;i+=4){
+   const gray=Math.max(52,Math.min(193,124+(luma(i)-base)*.85+(base-110)*.21));
+   data[i]=data[i+1]=data[i+2]=gray;data[i+3]=255;
+  }
+  lightCtx.putImageData(sample,0,0);lastLightTime=performance.now();
+ }
+}
+function drawWornGarment(image,fit,rect){
+ garmentCtx.clearRect(0,0,W,H);drawWarpedGarment(image,fit,garmentCtx);
+ if(s.bodyMask){garmentCtx.globalCompositeOperation='destination-in';garmentCtx.save();if(s.mirror){garmentCtx.translate(rect.x*2+rect.width,0);garmentCtx.scale(-1,1);}garmentCtx.drawImage(s.bodyMask,rect.x,rect.y,rect.width,rect.height);garmentCtx.restore();garmentCtx.globalCompositeOperation='source-over';}
+ lightFabric(fit);
+ // Confine the lighting pass to the final garment silhouette.
+ armFrameContext.clearRect(0,0,W,H);
+ armFrameContext.drawImage(lightMap,0,0,W,H);
+ armFrameContext.globalCompositeOperation='destination-in';
+ armFrameContext.drawImage(garmentLayer,0,0);
+ armFrameContext.globalCompositeOperation='source-over';
+ garmentCtx.save();garmentCtx.globalCompositeOperation='soft-light';
+ garmentCtx.globalAlpha=.75;garmentCtx.drawImage(armFrameCanvas,0,0);garmentCtx.restore();
+ ctx.save();ctx.filter='blur(0.55px)';ctx.drawImage(garmentLayer,0,0);ctx.restore();
+}
+function drawArmOcclusion(fit,rect){
+ armMaskContext.clearRect(0,0,W,H);armMaskContext.strokeStyle='#fff';armMaskContext.lineCap='round';armMaskContext.lineJoin='round';
+ const arms=[['leftShoulder','leftElbow','leftWrist'],['rightShoulder','rightElbow','rightWrist']];
+ for(const [shoulder,elbow,wrist] of arms){
+  const points=[shoulder,elbow,wrist].map(name=>({x:fit[name+'X'],y:fit[name+'Y']}));if(!points.slice(0,2).every(p=>Number.isFinite(p.x)&&Number.isFinite(p.y)))continue;
+  if(Number.isFinite(points[2].x)&&Number.isFinite(points[2].y)){armMaskContext.lineWidth=Math.max(9,fit.shoulderWidth*.135);armMaskContext.beginPath();armMaskContext.moveTo(points[1].x,points[1].y);armMaskContext.lineTo(points[2].x,points[2].y);armMaskContext.stroke();}
+ }
+ armFrameContext.clearRect(0,0,W,H);armFrameContext.save();if(s.mirror){armFrameContext.translate(W,0);armFrameContext.scale(-1,1);}armFrameContext.drawImage(video,rect.x,rect.y,rect.width,rect.height);armFrameContext.restore();
+ armFrameContext.globalCompositeOperation='destination-in';armFrameContext.drawImage(armMaskCanvas,0,0);armFrameContext.globalCompositeOperation='source-over';ctx.drawImage(armFrameCanvas,0,0);
+}
+function draw(){
+ let cameraRect=null;
+ if(s.source==='demo')model();
+ else if(s.source==='photo'&&s.photo){const r=containRect(s.photo.width,s.photo.height,W,H);ctx.fillStyle='#e4e8dd';ctx.fillRect(0,0,W,H);ctx.drawImage(s.photo,r.x,r.y,r.width,r.height);}
+ else if(s.source==='camera'&&video.readyState>=2){
+  cameraRect=containRect(video.videoWidth,video.videoHeight,W,H);ctx.fillStyle='#20231f';ctx.fillRect(0,0,W,H);ctx.save();if(s.mirror){ctx.translate(W,0);ctx.scale(-1,1);}ctx.drawImage(video,cameraRect.x,cameraRect.y,cameraRect.width,cameraRect.height);ctx.restore();
+  if(tracker&&s.track&&video.currentTime!==s.lastVideoTime&&performance.now()-s.lastDetection>80){
+   s.lastVideoTime=video.currentTime;s.lastDetection=performance.now();
+   try{tracker.detectForVideo(video,s.lastDetection,out=>{const f=fitFromPose(out.landmarks[0],cameraRect.width,cameraRect.height,s.mirror);updateBodyMask(out.segmentationMasks?.[0]);if(f&&s.bodyMask&&bodyMaskImage){
+    const {width:mw,height:mh,data}=bodyMaskImage;
+    const x=Math.round((s.mirror?1-f.x/cameraRect.width:f.x/cameraRect.width)*mw);
+    const y=Math.min(mh-1,Math.max(0,Math.round(f.y/cameraRect.height*mh)));
+    let left=x,right=x;
+    if(x>=0&&x<mw&&data[(y*mw+x)*4+3]>150){
+     while(left>0&&data[(y*mw+left-1)*4+3]>150)left--;
+     while(right+1<mw&&data[(y*mw+right+1)*4+3]>150)right++;
+     f.chestWidth=Math.min(f.shoulderWidth*1.53,(right-left)*cameraRect.width/mw);
+    }
+   }
+   s.pose=f?smoothFit(s.pose,offsetFit(f,cameraRect.x,cameraRect.y),.5):null;$('trackingLabel').textContent=f?'Wearing preview · aligned to your shoulders and body':'Step back until shoulders and hips are visible';});}
+   catch(error){console.warn('Camera pose tracking failed',error);s.pose=null;s.bodyMask=null;if(useBodyMask){useBodyMask=false;tracker=null;trackingTask=null;tracking();}else{s.track=false;$('trackingToggle').checked=false;$('trackingLabel').textContent='Tracking unavailable · use the photo preview';}}
+  }
+ }else model();
+ if(s.img&&s.visible&&(s.source!=='camera'||(s.pose&&cameraRect))){
+  if(s.pose&&s.source==='camera'&&cameraRect){drawWornGarment(s.img,s.pose,cameraRect);if(!pattern(s.img).long)drawArmOcclusion(s.pose,cameraRect);}
+  else{const f={x:360,y:445,width:350,angle:0};ctx.save();ctx.translate(f.x+s.x,f.y+s.y);ctx.rotate(f.angle+s.rot*Math.PI/180);const w=f.width*s.scale,h=w*s.img.height/s.img.width;ctx.drawImage(s.img,-w/2,-h/2,w,h);ctx.restore();}
+ }
+ requestAnimationFrame(draw);
+}
+function controls(){ $('scaleInput').value=s.scale*100;$('scaleValue').textContent=Math.round(s.scale*100)+'%';$('heightInput').value=s.y;$('heightValue').textContent=s.y;$('rotationInput').value=s.rot;$('rotationValue').textContent=s.rot+'°';window.ETry3D?.setScale(s.scale);window.ETry3D?.setHeight(s.y/350);window.ETry3D?.setRotation(s.rot);}
+function showSource(src){if(src!=='camera'&&s.stream){s.stream.getTracks().forEach(t=>t.stop());s.stream=null;video.srcObject=null;}for(const control of ['heightInput','rotationInput'])$(control).disabled=src==='demo';if(src==='camera'){s.scale=1;s.x=s.y=s.rot=0;s.lastVideoTime=-1;controls();}s.source=src;s.bodyMask=null;s.track=false;s.pose=null;$('mirrorCanvas').hidden=src==='demo';$('threeCanvas').hidden=src!=='demo';$('trackingToggle').checked=false;for(const id of ['demoBtn','cameraBtn','photoBtn'])$(id).classList.toggle('selected',id===({demo:'demoBtn',camera:'cameraBtn',photo:'photoBtn'}[src]));$('sourceLabel').textContent={demo:'3D FITTING STUDIO',camera:'LIVE CAMERA PREVIEW',photo:'PHOTO PREVIEW'}[src];$('previewTag').textContent={demo:'3D MANNEQUIN · ROTATE TO EXPLORE',camera:'LIVE TRY-ON · CAMERA STAYS ON DEVICE',photo:'PHOTO TRY-ON · MANUAL ADJUSTMENT'}[src];$('stopCameraBtn').hidden=src!=='camera';$('trackingToggle').disabled=src!=='camera';}
+async function startCamera(){try{if(s.stream){s.stream.getTracks().forEach(t=>t.stop());s.stream=null;}const stream=await navigator.mediaDevices.getUserMedia({video:true,audio:false});video.srcObject=stream;await video.play();s.mirror=true;showSource('camera');s.stream=stream;tracking();}catch{toast('Camera unavailable. Allow permission or try a photo.');showSource('demo');}}
+let useBodyMask=true;
+async function tracking(){s.track=true;$('trackingToggle').checked=true;$('trackingLabel').textContent='Loading on-device body tracking…';try{if(!trackingTask){trackingTask=(async()=>{const {FilesetResolver,PoseLandmarker}=await import('@mediapipe/tasks-vision');const f=await FilesetResolver.forVisionTasks('/vision-wasm');return PoseLandmarker.createFromOptions(f,{baseOptions:{modelAssetPath:'/models/pose_landmarker_lite.task'},runningMode:'VIDEO',numPoses:1,outputSegmentationMasks:useBodyMask});})();}tracker=await trackingTask;if(s.source!=='camera')return;}catch{trackingTask=null;s.track=false;s.pose=null;$('trackingToggle').checked=false;$('trackingLabel').textContent='Tracking unavailable · retry Auto-follow body';toast('Body tracking could not load. Retry Auto-follow body.');}}
+async function fileRead(f){if(!f||!['image/png','image/jpeg'].includes(f.type)||f.size>5e6)throw Error('Choose a PNG or JPG up to 5 MB.');const src=await new Promise((ok,no)=>{const r=new FileReader();r.onload=()=>ok(r.result);r.onerror=no;r.readAsDataURL(f);});return {src,img:await load(src)};}
+async function addPiece(src,name){const p={id:crypto.randomUUID(),name,src,custom:true,type:'Your upload'};await store('pieces','put',p);s.pieces.push(p);if(!await select(p))throw Error('Could not extract this garment. Try a clearer photo of the top.');toast('Garment added to your wardrobe.');}
+function lookList(){const g=$('looksGrid');g.replaceChildren();$('lookCount').textContent=s.looks.length;if(!s.looks.length){g.textContent='Your saved looks will appear here.';return;}for(const l of s.looks){const a=document.createElement('article');a.className='look-card';const im=new Image();im.loading='lazy';im.src=l.src;const h=document.createElement('h3');h.textContent=l.name;const b=document.createElement('button');b.textContent='Delete';b.onclick=async()=>{try{if(s.account)await api(`/api/looks/${l.id}`,{method:'DELETE'});else await store('looks','delete',l.id);s.looks=s.looks.filter(x=>x.id!==l.id);lookList();}catch(e){toast(e.message);}};a.append(im,h,b);g.append(a);}}
+for(const b of document.querySelectorAll('[data-filter]'))b.onclick=()=>{s.filter=b.dataset.filter;document.querySelectorAll('[data-filter]').forEach(x=>x.classList.toggle('selected',x===b));wardrobe();};
+$('searchInput').oninput=wardrobe;$('demoBtn').onclick=()=>showSource('demo');$('cameraBtn').onclick=startCamera;$('stopCameraBtn').onclick=()=>showSource('demo');$('photoBtn').onclick=()=>$('photoInput').click();
+$('photoInput').onchange=async e=>{try{const r=await fileRead(e.target.files[0]);s.photo=r.img;showSource('photo');}catch(x){toast(x.message);}e.target.value='';};$('uploadBtn').onclick=()=>$('garmentInput').click();
+$('garmentInput').onchange=async e=>{try{const r=await fileRead(e.target.files[0]);await addPiece(r.src,e.target.files[0].name.replace(/\.[^.]+$/,''));}catch(x){toast(x.message||'Could not save upload.');}e.target.value='';};
+$('scaleInput').oninput=e=>{s.scale=+e.target.value/100;controls();};$('heightInput').oninput=e=>{s.y=+e.target.value;controls();};$('rotationInput').oninput=e=>{s.rot=+e.target.value;controls();};
+function reset(){s.scale=1;s.x=0;s.y=0;s.rot=0;controls();}$('resetBtn').onclick=$('resetFitBtn').onclick=reset;
+$('flipBtn').onclick=()=>{s.mirror=!s.mirror;s.pose=null;};$('visibilityBtn').onclick=()=>{s.visible=!s.visible;window.ETry3D?.setVisible(s.visible);};$('trackingToggle').onchange=e=>{if(e.target.checked)tracking();else{s.track=false;s.pose=null;}};
+let drag=null;canvas.onpointerdown=e=>{drag={x:e.clientX,y:e.clientY,ox:s.x,oy:s.y,ratio:W/canvas.getBoundingClientRect().width};canvas.setPointerCapture(e.pointerId);};canvas.onpointermove=e=>{if(drag){s.x=drag.ox+(e.clientX-drag.x)*drag.ratio;s.y=drag.oy+(e.clientY-drag.y)*drag.ratio;controls();}};canvas.onpointerup=canvas.onpointercancel=()=>drag=null;
+function snapshot(){return (s.source==='demo'?$('threeCanvas'):canvas).toDataURL('image/png');}
+$('bodyChest').value=localStorage.getItem('etryroom-body-chest')||'';$('bodyWaist').value=localStorage.getItem('etryroom-body-waist')||'';$('bodyHip').value=localStorage.getItem('etryroom-body-hip')||'';$('garmentChest').value=localStorage.getItem('etryroom-garment-chest')||'';
+function compareMeasurements(){const body=+$('bodyChest').value,garment=+$('garmentChest').value,out=$('easeResult');if(!body||!garment){out.textContent='Add both measurements for a comparison.';return;}localStorage.setItem('etryroom-body-chest',body);localStorage.setItem('etryroom-body-waist',$('bodyWaist').value);localStorage.setItem('etryroom-body-hip',$('bodyHip').value);localStorage.setItem('etryroom-garment-chest',garment);const ease=garment-body;out.textContent=ease<0?`About ${Math.abs(ease).toFixed(1)} cm smaller than your chest; expect a snug fit.`:`About ${ease.toFixed(1)} cm of chest ease. This is a measurement comparison, not a size prediction.`;}
+for(const id of ['bodyChest','bodyWaist','bodyHip','garmentChest'])$(id).addEventListener('input',compareMeasurements);
+window.addEventListener('etry3d-ready',()=>{if(s.img){window.ETry3D.setTexture(s.img,s.selected.type,s.selected.id);window.ETry3D.setLower(...(s.lower||[]));}controls();});
+function formatSize(size,basis){if(basis==='body')return size.label+' · chest '+size.chest_min_cm+'–'+size.chest_max_cm+' cm'+(size.waist_min_cm!=null?' · waist '+size.waist_min_cm+'–'+size.waist_max_cm+' cm':'')+(size.hip_min_cm!=null?' · hip '+size.hip_min_cm+'–'+size.hip_max_cm+' cm':'');return size.label+' · chest '+size.chest_cm+' cm'+(size.waist_cm!=null?' · waist '+size.waist_cm+' cm':'')+(size.hip_cm!=null?' · hip '+size.hip_cm+' cm':'');}function updateChartHelp(){const body=$('measurementBasis').value==='body';$('sizeChartHelp').textContent=body?'Chest only: label, chest min, chest max. Add waist and hip ranges as columns 4–7. Example: M, 92, 98, 76, 82, 96, 102.':'Chest only: label, chest, optional length. Full chart: label, chest, waist, hip, optional length. Enter garment circumferences; double flat widths. Example: M, 104, 88, 100, 70.';$('sizeChartInput').placeholder=body?'S, 86, 92\nM, 92, 98, 76, 82, 96, 102':'S, 98, 68\nM, 104, 88, 100, 70\nL, 110, 94, 106, 72';}
+function renderProducts(){const list=$('productList');list.replaceChildren();for(const product of s.garments){const row=document.createElement('div');row.className='product-row';const title=document.createElement('strong');title.textContent=(product.brand?product.brand+' · ':'')+product.name;const sizes=document.createElement('small');sizes.textContent=product.sizes.map(x=>formatSize(x,product.measurement_basis)).join('  ·  ');const actions=document.createElement('div');const tryButton=document.createElement('button');tryButton.textContent=product.has_image?'Try in studio & find size':'Find my size';tryButton.onclick=product.has_image?()=>openProductInStudio(product):()=>recommendSize(product);const remove=document.createElement('button');remove.textContent='Remove';remove.onclick=async()=>{try{await api('/api/garments/'+encodeURIComponent(product.id),{method:'DELETE'});s.garments=s.garments.filter(x=>x.id!==product.id);renderProducts();}catch(e){toast(e.message);}};actions.append(tryButton,remove);row.append(title,sizes,actions);list.append(row);}}
+async function fetchProductImage(url){const response=await fetch(url,{credentials:'same-origin'});if(!response.ok)throw Error('Product image could not be loaded.');const blob=await response.blob();if(!['image/png','image/jpeg'].includes(blob.type)||blob.size>5e6)throw Error('Product image is not a supported PNG or JPEG.');return await new Promise((resolve,reject)=>{const reader=new FileReader();reader.onload=()=>resolve(reader.result);reader.onerror=()=>reject(Error('Could not read the product image.'));reader.readAsDataURL(blob);});}async function addFittingProduct(product){if(!product.has_image||!product.image_url)throw Error('This saved size chart has no product image to try in 3D.');const existing=s.pieces.find(piece=>piece.productId===product.id||piece.catalogId===product.id);if(existing)return select(existing);const src=await fetchProductImage(product.image_url),piece={id:'product:'+product.id,productId:product.id,name:product.name,src,custom:true,type:garmentTypeLabels[product.garment_type]||'T-shirt',source_url:product.source_url};await store('pieces','put',piece);s.pieces.push(piece);await select(piece);}async function openProductInStudio(product){try{await addFittingProduct(product);$('workspace').hidden=false;$('looksPanel').hidden=true;showSource('demo');$('workspace').scrollIntoView({behavior:'smooth',block:'start'});await recommendSize(product);$('fitRecommendation').scrollIntoView({behavior:'smooth',block:'center'});}catch(e){toast(e.message);}}function renderCatalog(){const grid=$('catalogGrid'),query=$('catalogSearch').value.toLowerCase();grid.replaceChildren();const rows=s.catalog.filter(p=>`${p.brand} ${p.name}`.toLowerCase().includes(query));$('catalogEmpty').hidden=rows.length>0;for(const product of rows){const card=document.createElement('article');card.className='catalog-card';card.dataset.productId=product.id;const image=document.createElement('div');image.className='catalog-image';if(product.image_url){const img=new Image();img.src=product.image_url;img.alt=`${product.name} product photo`;image.append(img);}else image.textContent='ET / PRODUCT';const brand=document.createElement('small');brand.textContent=product.brand||'MEASURED SIZE GUIDE';const title=document.createElement('h3');title.textContent=product.name;const sizes=document.createElement('p');sizes.textContent=product.sizes.map(size=>formatSize(size,product.measurement_basis)).join('  /  ');const find=document.createElement('button');find.className='primary';find.textContent='Try in 3D & find size';find.onclick=()=>openProductInStudio(product);const share=document.createElement('button');share.className='secondary';share.textContent='Copy product link';share.onclick=async()=>{try{await navigator.clipboard.writeText(`${location.origin}/?product=${encodeURIComponent(product.id)}`);toast('Product link copied.');}catch{toast('Copy unavailable. Use this link: '+`${location.origin}/?product=${product.id}`);}};card.append(image,brand,title,sizes);if(product.source_url){const source=document.createElement('a');source.className='catalog-source';source.href=product.source_url;source.target='_blank';source.rel='noopener noreferrer';source.textContent='Seller-entered · view source chart ↗';card.append(source);}else{const source=document.createElement('small');source.className='catalog-source';source.textContent='Source unavailable';card.append(source);}card.append(find,share);grid.append(card);}}
+async function loadCatalog(){try{s.catalog=await api('/api/catalog?q='+encodeURIComponent($('catalogSearch').value)+'&limit=60');const productId=new URLSearchParams(location.search).get('product');if(productId&&!s.catalog.some(item=>item.id===productId)){try{s.catalog.unshift(await api('/api/catalog/'+encodeURIComponent(productId)));}catch{toast('That published size guide is no longer available.');}}renderCatalog();if(productId){const card=[...$('catalogGrid').children].find(item=>item.dataset.productId===productId);if(card){card.scrollIntoView({behavior:'smooth',block:'center'});card.classList.add('catalog-card-highlight');}}}catch{$('catalogEmpty').hidden=false;}}
+async function loadAccount(){try{s.account=await api('/api/auth/me');s.profiles=s.account.profiles||[];$('accountBtn').textContent='My account';$('accountBanner').textContent=`Signed in · ${s.account.email||'fit profile synced'}`;$('signOutBtn').hidden=false;$('deleteAccountBtn').hidden=false;$('authSubmit').hidden=true;$('authSwitch').hidden=true;s.garments=await api('/api/garments');renderProducts();stateProfile=s.profiles[0]||null;$('profileName').value=stateProfile?.name||'Personal';if(stateProfile){$('bodyChest').value=stateProfile.body_chest_cm;$('bodyWaist').value=stateProfile.body_waist_cm??'';$('bodyHip').value=stateProfile.body_hip_cm??'';}renderProfileOptions(stateProfile?.id||'');s.looks=(await api('/api/looks')).map(l=>({...l,src:l.image_url,created:l.created_at}));lookList();}catch{s.account=null;s.profiles=[];s.garments=[];stateProfile=null;renderProducts();$('accountBtn').textContent='Sign in';$('accountBanner').textContent='Sign in to keep your wardrobe and fit profiles across visits.';$('signOutBtn').hidden=true;$('deleteAccountBtn').hidden=true;$('authSubmit').hidden=false;$('authSwitch').hidden=false;renderProfileOptions('');}}
+let stateProfile=null;
+function renderProfileOptions(selected=''){const select=$('profileSelect');select.replaceChildren(new Option('New profile',''));for(const profile of s.profiles){select.add(new Option(`${profile.name} · ${profile.body_chest_cm} chest${profile.body_waist_cm?` / ${profile.body_waist_cm} waist`:''}${profile.body_hip_cm?` / ${profile.body_hip_cm} hip`:''}`,profile.id));}select.value=s.profiles.some(profile=>profile.id===selected)?selected:'';}
+async function saveProfile(){if(!s.account)return null;const chest=+$('bodyChest').value,name=$('profileName').value.trim()||'Personal',optional=id=>$(id).value===''?null:+$(id).value;if(chest<50||chest>180)throw Error('Enter your measured chest between 50 and 180 cm.');const saved=await api('/api/profiles',{method:'POST',body:JSON.stringify({name,body_chest_cm:chest,body_waist_cm:optional('bodyWaist'),body_hip_cm:optional('bodyHip')})}),index=s.profiles.findIndex(profile=>profile.id===saved.id||profile.name.toLowerCase()===saved.name.toLowerCase());if(index<0)s.profiles.push(saved);else s.profiles[index]=saved;stateProfile=saved;$('profileName').value=saved.name;renderProfileOptions(saved.id);return saved;}
+function showFitResult(result){const panel=$('fitRecommendation');panel.replaceChildren();const heading=document.createElement('h4');heading.textContent=result.recommended_size?'Recommended size: '+result.recommended_size:result.missing_measurements?.length?'More measurements needed':'No listed size fits every measurement';const summary=document.createElement('p');summary.textContent=result.message;const measured=Object.entries(result.profile_measurements_cm||{}).filter(([,value])=>value!=null).map(([name,value])=>`${name} ${value} cm`).join(' · ');const detail=document.createElement('small');detail.textContent=`Your measurements: ${measured}${result.measurement_basis==='garment'?` · ${result.preference} ease targets: ${Object.entries(result.target_eases_cm||{}).map(([name,value])=>`${name} +${value} cm`).join(', ')}`:''} · ${result.measurement_source}`;const table=document.createElement('div');table.className='fit-size-list';for(const size of result.size_comparison){const row=document.createElement('div');row.className='fit-size-row';const label=document.createElement('strong');label.textContent=size.label;const dimensions=document.createElement('span');if(result.measurement_basis==='body'){const ranges=[`chest ${size.chest_min_cm}–${size.chest_max_cm}`];if(size.waist_min_cm!=null)ranges.push(`waist ${size.waist_min_cm}–${size.waist_max_cm}`);if(size.hip_min_cm!=null)ranges.push(`hip ${size.hip_min_cm}–${size.hip_max_cm}`);dimensions.textContent='Body ranges · '+ranges.join(' · ')+' cm';}else{dimensions.textContent='Ease · '+Object.entries(size.dimension_eases_cm||{}).map(([name,value])=>`${name} ${value>=0?'+':''}${value} cm`).join(' · ');}const delta=document.createElement('small');delta.textContent=result.measurement_basis==='body'?(size.contains_measurements?'All measured ranges':size.distance_cm+' cm outside ranges'):size.distance_cm+' cm from preference';row.append(label,dimensions,delta);table.append(row);}if(result.source_url){const source=document.createElement('a');source.className='catalog-source';source.href=result.source_url;source.target='_blank';source.rel='noopener noreferrer';source.textContent='Seller-entered · open source size chart ↗';panel.append(heading,summary,detail,source,table);}else panel.append(heading,summary,detail,table);}
+async function recommendSize(product){
+ if(!s.account){authMode='login';openAccount();toast('Sign in to compare this size chart with a saved chest measurement.');return null;}
+ const chest=+$('bodyChest').value;if(chest<50||chest>180)throw Error('Add your chest measurement in the fitting desk before asking for a size.');
+ let profile=stateProfile;const waist=$('bodyWaist').value===''?null:+$('bodyWaist').value,hip=$('bodyHip').value===''?null:+$('bodyHip').value;if(!profile||profile.body_chest_cm!==chest||profile.body_waist_cm!==waist||profile.body_hip_cm!==hip)profile=await saveProfile();
+ const preference=$('fitPreference').value,result=await api(`/api/fit/${encodeURIComponent(product.id)}?profile_id=${encodeURIComponent(profile.id)}&preference=${encodeURIComponent(preference)}`);
+ showFitResult(result);$('fitRecommendation').scrollIntoView({behavior:'smooth',block:'nearest'});return result;
+}
+async function saveProduct(){try{if(!s.account){authMode='login';openAccount();throw Error('Sign in before adding a measured product.');}const basis=$('measurementBasis').value,lines=$('sizeChartInput').value.split(/\n/).filter(x=>x.trim()),numeric=value=>/^\d+(?:\.\d+)?$/.test(value||'');const sizes=lines.map(line=>{const row=line.split(/[,\t]/).map(x=>x.trim()),[label,...values]=row;if(!label)throw Error('Add a size label to every row.');if(basis==='body'){if(values.length!==2&&values.length!==6)throw Error('Use chest min and max, plus optional waist min/max and hip min/max.');if(!numeric(values[0])||!numeric(values[1]))throw Error('Chest range values must be numeric centimetres.');const output={label,chest_min_cm:+values[0],chest_max_cm:+values[1]};if(values.length===6){for(const [name,a,b] of [['waist',values[2],values[3]],['hip',values[4],values[5]]]){if((a==='')!==(b===''))throw Error(`Enter both ${name} limits or leave both blank.`);if(a!==''&&(!numeric(a)||!numeric(b)))throw Error(`${name} limits must be numeric centimetres.`);if(a!==''){output[`${name}_min_cm`]=+a;output[`${name}_max_cm`]=+b;}}}return output;}if(values.length<1||values.length>4||!numeric(values[0])||values.some((value,index)=>index>0&&value!==''&&!numeric(value)))throw Error('Use chest only (and optional length), or chest, waist, hip, and optional length in cm.');if(values.length<=2)return {label,chest_cm:+values[0],length_cm:values[1]?+values[1]:null};return {label,chest_cm:+values[0],waist_cm:values[1]?+values[1]:null,hip_cm:values[2]?+values[2]:null,length_cm:values[3]?+values[3]:null};});if(!sizes.length)throw Error('Add at least one measured size.');const image=(s.selected.custom&&(s.selected.src.startsWith('data:image/png;')||s.selected.src.startsWith('data:image/jpeg;')))?s.selected.src:'';const product=await api('/api/garments',{method:'POST',body:JSON.stringify({name:$('productName').value.trim(),brand:$('productBrand').value.trim(),source_url:$('sourceUrl').value.trim(),measurement_basis:basis,garment_type:$('garmentType').value,image_data:image,publish:$('publishProduct').checked,publish_ack:$('publishAck').checked,sizes})});s.garments.unshift(product);$('productName').value='';$('productBrand').value='';$('garmentType').value='tshirt';$('sourceUrl').value='';$('sizeChartInput').value='';$('measurementBasis').value='garment';updateChartHelp();$('publishProduct').checked=false;$('publishAck').checked=false;renderProducts();await loadCatalog();toast(product.is_published?'Product size guide published.':'Product and size chart saved privately.');}catch(e){toast(e.message);}}
+function openAccount(){
+ const recovery=authMode==='forgot'||authMode==='reset';$('authMessage').textContent='';
+ $('authHeading').textContent=s.account&&!recovery?'Your account':({login:'Welcome back.',register:'Create your account.',forgot:'Reset your password.',reset:'Choose a new password.'}[authMode]);
+ $('authSubheading').textContent=s.account&&!recovery?`Signed in as ${s.account.email}.`:({login:'Sign in to sync your fit profiles and saved garments.',register:'Create an account to keep your wardrobe and fit profiles.',forgot:'Enter your account email. If it exists, we’ll send a one-time reset link.',reset:'Choose a new password with at least 12 characters. This link expires in 30 minutes.'}[authMode]);
+ $('authForm').hidden=!!s.account&&!recovery;$('authEmailLabel').hidden=authMode==='reset';$('authEmail').required=authMode!=='reset';$('authPasswordLabel').hidden=authMode==='forgot';$('authPassword').required=authMode!=='forgot';$('authPassword').value='';
+ $('authSubmit').textContent=({login:'Sign in',register:'Create account',forgot:'Send reset link',reset:'Update password'}[authMode]);
+ $('authSwitch').hidden=!!s.account&&!recovery;$('authSwitch').textContent=recovery?'Back to sign in':authMode==='login'?'New here? Create an account':'Already registered? Sign in';
+ $('forgotPassword').hidden=!!s.account||authMode!=='login';$('consentRow').hidden=authMode!=='register';$('privacyConsent').required=authMode==='register';$('privacyConsent').checked=false;
+ $('authPassword').autocomplete=authMode==='login'?'current-password':'new-password';$('signOutBtn').hidden=!s.account;$('deleteAccountBtn').hidden=!s.account;$('accountDialog').showModal();
+}
+$('accountBtn').onclick=openAccount;$('closeAccount').onclick=()=>$('accountDialog').close();$('forgotPassword').onclick=()=>{authMode='forgot';openAccount();};$('authSwitch').onclick=()=>{authMode=authMode==='login'?'register':'login';openAccount();};
+$('authForm').onsubmit=async e=>{
+ e.preventDefault();$('authMessage').textContent='Working…';const mode=authMode;
+ try{
+  if(mode==='forgot'){
+   const result=await api('/api/auth/password-reset/request',{method:'POST',body:JSON.stringify({email:$('authEmail').value})});$('authMessage').textContent=result.status;return;
+  }
+  if(mode==='reset'){
+   if(!pendingResetToken)throw Error('This reset link is missing or has expired. Request a new one.');
+   await api('/api/auth/password-reset/complete',{method:'POST',body:JSON.stringify({token:pendingResetToken,password:$('authPassword').value})});pendingResetToken='';await loadAccount();$('accountDialog').close();authMode='login';openAccount();$('authHeading').textContent='Password updated.';$('authSubheading').textContent='Your saved fitting room is secure. Sign in with your new password.';$('authMessage').textContent='Password updated. You can sign in now.';return;
+  }
+  await api(`/api/auth/${mode}`,{method:'POST',body:JSON.stringify({email:$('authEmail').value,password:$('authPassword').value,...(mode==='register'?{accepted_privacy:$('privacyConsent').checked}:{})})});await loadAccount();$('accountDialog').close();toast(mode==='register'?'Your account is ready.':'Welcome back.');
+ }catch(error){$('authMessage').textContent=error.message;}
+};
+$('signOutBtn').onclick=async()=>{await api('/api/auth/logout',{method:'POST'});s.account=null;s.profiles=[];s.garments=[];renderProducts();$('accountDialog').close();await loadAccount();};$('deleteAccountBtn').onclick=async()=>{if(!confirm('Permanently delete your account, fit profiles, products, and saved looks?'))return;try{await api('/api/account',{method:'DELETE'});await api('/api/auth/logout',{method:'POST'});s.account=null;s.garments=[];s.profiles=[];s.looks=[];lookList();renderProducts();$('accountDialog').close();await loadAccount();toast('Account and saved data deleted.');}catch(e){$('authMessage').textContent=e.message;}};
+$('measurementBasis').onchange=updateChartHelp;updateChartHelp();$('saveProductBtn').onclick=saveProduct;$('profileSelect').onchange=()=>{const profile=s.profiles.find(item=>item.id===$('profileSelect').value)||null;stateProfile=profile;$('profileName').value=profile?.name||'';$('bodyChest').value=profile?.body_chest_cm??'';$('bodyWaist').value=profile?.body_waist_cm??'';$('bodyHip').value=profile?.body_hip_cm??'';$('fitRecommendation').replaceChildren();compareMeasurements();};$('saveProfileBtn').onclick=()=>{if(!s.account){authMode='login';openAccount();toast('Sign in to save fit profiles across visits.');return;}saveProfile().then(()=>toast('Fit profile saved to your account.')).catch(e=>toast(e.message));};for(const id of ['bodyChest','bodyWaist','bodyHip'])$(id).addEventListener('change',()=>{if(s.account)saveProfile().catch(e=>toast(e.message));});
+$('catalogNav').onclick=()=>$('catalogPanel').scrollIntoView({behavior:'smooth'});$('catalogSearch').oninput=renderCatalog;
+$('saveBtn').onclick=async()=>{try{const data=snapshot();if(s.account){const saved=await api('/api/looks',{method:'POST',body:JSON.stringify({name:s.selected.name,image_data:data})});s.looks.unshift({...saved,src:data});}else{const l={id:crypto.randomUUID(),name:s.selected.name,src:data};await store('looks','put',l);s.looks.push(l);}lookList();toast('Look saved to your account.');}catch(e){toast(e.message||'Could not save. Download a snapshot instead.');}};$('downloadBtn').onclick=()=>{const a=document.createElement('a');a.download='etryroom-look.png';a.href=snapshot();a.click();};
+function showLooks(on){$('workspace').hidden=on;$('looksPanel').hidden=!on;if(on){showSource('demo');lookList();}}$('looksNav').onclick=()=>showLooks(true);$('studioNav').onclick=$('backBtn').onclick=()=>showLooks(false);
+$('helpBtn').onclick=()=>{ $('dialogTitle').textContent='Meet your fitting studio.';$('dialogBody').innerHTML='<p>Pick a garment, start the camera or upload a photo, then drag and adjust the preview.</p><p>Camera frames stay in your browser. Pose tracking downloads on first use. Uploads and looks save to this browser. The overlay is a style preview, not a size recommendation.</p>';$('infoDialog').showModal();};$('extensionBtn').onclick=()=>toast('Load etry_extension as an unpacked Chrome or Edge extension. Right click a product image to import it.');$('closeDialog').onclick=$('dialogDone').onclick=()=>$('infoDialog').close();
+window.addEventListener('message',async e=>{if(e.source!==window||e.origin!==location.origin||e.data?.type!=='ETRYROOM_IMPORT')return;try{await addPiece(e.data.data,e.data.name||'Shopping find');$('productName').value=(e.data.name||'Shopping find').slice(0,100);$('garmentType').value=inferGarmentType(e.data.name||'');$('sourceUrl').value=e.data.chart?.sourceUrl||e.data.sourceUrl||'';const chart=e.data.chart;if(chart?.sizes?.length>=2){$('measurementBasis').value=chart.basis==='body'?'body':'garment';updateChartHelp();$('sizeChartInput').value=chart.sizes.map(size=>{const values=[String(size.label).replace(/[\r\n,]/g,' ').slice(0,24)];if(chart.basis==='body'){values.push(size.chest_min_cm,size.chest_max_cm);if(size.waist_min_cm!=null||size.hip_min_cm!=null)values.push(size.waist_min_cm??'',size.waist_max_cm??'',size.hip_min_cm??'',size.hip_max_cm??'');}else{values.push(size.chest_cm);if(size.waist_cm!=null||size.hip_cm!=null)values.push(size.waist_cm??'',size.hip_cm??'');}return values.join(', ');}).join('\n');}$('catalogEditor').scrollIntoView({behavior:'smooth',block:'center'});const message=chart?.sizes?.length>=2?(chart.basisConfidence==='range'?'Ranges were detected as body measurements. Verify the chart basis and every value before saving.':'Product photo imported with detected chart values. Review the measurements before saving.'):'Product photo imported. No readable size table was detected; enter the source measurements before saving.';toast(message);window.postMessage({type:'ETRYROOM_IMPORTED',requestId:e.data.requestId},location.origin);history.replaceState({},'',location.pathname+location.hash);}catch{toast('Could not import this product image.');}});
+window.addEventListener('pagehide',()=>s.stream?.getTracks().forEach(t=>t.stop()));document.addEventListener('visibilitychange',()=>{if(document.hidden&&s.source==='camera')showSource('demo');});
+async function init(){pendingResetToken=new URLSearchParams(location.hash.slice(1)).get('reset_token')||'';if(pendingResetToken){history.replaceState(null,'',location.pathname+location.search);authMode='reset';}try{s.pieces.push(...await store('pieces','getAll'));s.looks=await store('looks','getAll');}catch{toast('Browser storage unavailable.');}await select(defaults[0]);showSource('demo');await loadAccount();await loadCatalog();lookList();requestAnimationFrame(draw);document.documentElement.dataset.etryroomReady='true';window.postMessage({type:'ETRYROOM_READY'},location.origin);if(pendingResetToken&&!$('accountDialog').open)openAccount();}init();

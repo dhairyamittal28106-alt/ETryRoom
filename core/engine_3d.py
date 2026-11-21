@@ -29,7 +29,7 @@ class Engine3D:
         ).to(self.device)
 
         # ---------------- 2. LOAD SHIRT MESH ----------------
-        self.shirt = ClothSkinner("assets/shirts_3d/basic_shirt.obj")
+        self.shirt = ClothSkinner(os.path.join(os.path.dirname(__file__), "..", "assets", "shirts_3d", "basic_shirt.obj"))
 
         # ---------------- 3. AUTO UV GENERATION ----------------
         verts = self.shirt.mesh.vertices
@@ -121,8 +121,9 @@ class Engine3D:
         """Base64-to-CUDA Pipeline: accepts raw image bytes."""
         img_array = np.asarray(bytearray(img_bytes), dtype=np.uint8)
         tex_img = cv2.imdecode(img_array, cv2.IMREAD_COLOR)
-        if tex_img is not None:
-            self._apply_fabric_texture(tex_img)
+        if tex_img is None:
+            raise ValueError("Upload a valid PNG or JPEG image.")
+        self._apply_fabric_texture(tex_img)
 
     def _apply_fabric_texture(self, tex_img):
         """Shared texture extraction and UV mapping."""

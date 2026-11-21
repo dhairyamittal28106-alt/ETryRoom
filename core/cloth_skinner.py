@@ -27,7 +27,7 @@ class ClothSkinner:
 
         # 3. LOAD TEXTURE (shirt.png)
         # Assuming the same structure: assets/shirt.png
-        texture_path = "assets/shirt.png"
+        texture_path = os.path.join(os.path.dirname(__file__), "..", "assets", "shirt.png")
         texture = cv2.imread(texture_path)
 
         if texture is not None:
