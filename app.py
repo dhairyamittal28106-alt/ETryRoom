@@ -34,7 +34,8 @@ except ImportError as exc:
 app = FastAPI()
 
 ROOT = Path(__file__).resolve().parent
-WEB_ROOT = ROOT / "dist" if (ROOT / "dist" / "index.html").exists() else ROOT / "static"
+WEB_ROOT = next((path for path in (ROOT / "public" / "static", ROOT / "dist", ROOT / "static")
+                if (path / "index.html").exists()), ROOT / "static")
 app.mount("/static", StaticFiles(directory=WEB_ROOT), name="static")
 app.mount("/assets", StaticFiles(directory=ROOT / "assets"), name="assets")
 if (WEB_ROOT / "vision-wasm").exists():

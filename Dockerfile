@@ -15,7 +15,7 @@ COPY app.py ./
 COPY core ./core
 COPY assets ./assets
 COPY static/privacy.html ./static/privacy.html
-COPY --from=web-build /source/dist ./dist
+COPY --from=web-build /source/public/static ./dist
 COPY scripts/backup.py ./scripts/backup.py
 RUN useradd --create-home --uid 10001 etryroom && mkdir /data /backups && chown etryroom:etryroom /data /backups
 USER etryroom

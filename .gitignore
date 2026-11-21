@@ -3,6 +3,7 @@
 venv/
 node_modules/
 dist/
+public/static/
 static/public/
 data/*.sqlite3
 data/*.sqlite3-shm
