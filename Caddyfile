@@ -1,0 +1,4 @@
+{$ETRYROOM_DOMAIN} {
+	encode zstd gzip
+	reverse_proxy etryroom:8000
+}

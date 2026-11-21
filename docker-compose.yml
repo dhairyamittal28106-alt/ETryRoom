@@ -1,0 +1,47 @@
+services:
+  etryroom:
+    build: .
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8000:8000"
+    volumes:
+      - etryroom_data:/data
+    environment:
+      ETRYROOM_COOKIE_SECURE: "1"
+      ETRYROOM_PUBLIC_URL: ${ETRYROOM_PUBLIC_URL:-}
+      ETRYROOM_SMTP_HOST: ${ETRYROOM_SMTP_HOST:-}
+      ETRYROOM_SMTP_PORT: ${ETRYROOM_SMTP_PORT:-587}
+      ETRYROOM_SMTP_MODE: ${ETRYROOM_SMTP_MODE:-starttls}
+      ETRYROOM_SMTP_USERNAME: ${ETRYROOM_SMTP_USERNAME:-}
+      ETRYROOM_SMTP_PASSWORD: ${ETRYROOM_SMTP_PASSWORD:-}
+      ETRYROOM_FROM_EMAIL: ${ETRYROOM_FROM_EMAIL:-}
+  https:
+    image: caddy:2-alpine
+    profiles: ["production"]
+    restart: unless-stopped
+    environment:
+      ETRYROOM_DOMAIN: ${ETRYROOM_DOMAIN:-localhost}
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - etryroom_caddy_data:/data
+      - etryroom_caddy_config:/config
+    depends_on:
+      etryroom:
+        condition: service_healthy
+  backup:
+    build: .
+    profiles: ["production"]
+    restart: unless-stopped
+    command: ["python", "/app/scripts/backup.py", "--interval", "86400", "--retain", "14"]
+    volumes:
+      - etryroom_data:/data:ro
+      - etryroom_backups:/backups
+volumes:
+  etryroom_data:
+  etryroom_backups:
+  etryroom_caddy_data:
+  etryroom_caddy_config:
