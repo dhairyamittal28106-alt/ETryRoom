@@ -8,9 +8,9 @@ class ETryProcessor:
         self.mp_selfie = mp.solutions.selfie_segmentation
         self.segmenter = self.mp_selfie.SelfieSegmentation(model_selection=1)
 
-    # --------------------------------------------------
-    # BODY SEGMENTATION (CRITICAL)
-    # --------------------------------------------------
+    
+    
+    
     def get_body_mask(self, frame):
         rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         result = self.segmenter.process(rgb)
@@ -18,18 +18,18 @@ class ETryProcessor:
         mask = cv2.GaussianBlur(mask, (31, 31), 0)
         return mask
 
-    # --------------------------------------------------
-    # SHIRT MASK (REMOVE WHITE)
-    # --------------------------------------------------
+    
+    
+    
     def extract_shirt_mask(self, shirt_img):
         gray = cv2.cvtColor(shirt_img, cv2.COLOR_BGR2GRAY)
         _, mask = cv2.threshold(gray, 240, 255, cv2.THRESH_BINARY_INV)
         mask = cv2.GaussianBlur(mask, (7, 7), 0)
         return mask
 
-    # --------------------------------------------------
-    # REALISTIC CLOTHING PIPELINE
-    # --------------------------------------------------
+    
+    
+    
     def warp_clothing(self, frame, shirt_img, body_anchors):
         if not body_anchors:
             return frame
@@ -37,10 +37,10 @@ class ETryProcessor:
         lm = body_anchors.landmark
         h, w, _ = frame.shape
 
-        # BODY MASK
+        
         body_mask = self.get_body_mask(frame) / 255.0
 
-        # POSE ANCHORS
+        
         ls = np.array([lm[11].x * w, lm[11].y * h])
         rs = np.array([lm[12].x * w, lm[12].y * h])
         lh = np.array([lm[23].x * w, lm[23].y * h])
@@ -49,7 +49,7 @@ class ETryProcessor:
         if np.linalg.norm(ls - rs) < 30:
             return frame
 
-        # WIDTH WRAP
+        
         width = max(np.linalg.norm(ls - rs), np.linalg.norm(lh - rh))
         expand = width * 0.3
 
@@ -70,18 +70,18 @@ class ETryProcessor:
 
         matrix = cv2.getPerspectiveTransform(src_pts, dst_pts)
 
-        # SHIRT + MASK
+        
         shirt_mask = self.extract_shirt_mask(shirt_img)
         warped_shirt = cv2.warpPerspective(shirt_img, matrix, (w, h))
         warped_mask = cv2.warpPerspective(shirt_mask, matrix, (w, h))
         warped_mask = cv2.GaussianBlur(warped_mask, (31, 31), 0) / 255.0
 
-        # --------------------------------------------------
-        # DEPTH-AWARE OCCLUSION (ARMS + BODY)
-        # --------------------------------------------------
+        
+        
+        
         depth_map = np.zeros((h, w), dtype=np.float32)
 
-        for idx in [13, 14, 15, 16]:  # elbows & wrists
+        for idx in [13, 14, 15, 16]:  
             x = int(lm[idx].x * w)
             y = int(lm[idx].y * h)
             z = lm[idx].z
@@ -90,16 +90,16 @@ class ETryProcessor:
         depth_map = cv2.GaussianBlur(depth_map, (51, 51), 0)
         occlusion_mask = (depth_map < 0).astype(np.float32)
 
-        # --------------------------------------------------
-        # CLOTH DEFORMATION (CHEST BULGE + GRAVITY)
-        # --------------------------------------------------
+        
+        
+        
         bulge = np.exp(-((np.linspace(-1, 1, w)) ** 2)) * 6
         for y in range(h):
             warped_shirt[y] = np.roll(warped_shirt[y], int(bulge.mean()), axis=0)
 
-        # --------------------------------------------------
-        # FINAL COMPOSITE (THIS IS THE MAGIC)
-        # --------------------------------------------------
+        
+        
+        
         final_alpha = warped_mask * body_mask * (1 - occlusion_mask)
 
         for c in range(3):
@@ -108,7 +108,7 @@ class ETryProcessor:
                 + final_alpha * warped_shirt[:, :, c]
             )
 
-        # COLLAR SHADOW
+        
         shadow = np.zeros_like(frame)
         neck_y = int((ls[1] + rs[1]) / 2)
         cv2.ellipse(
@@ -123,9 +123,9 @@ class ETryProcessor:
 
         return frame
 
-    # --------------------------------------------------
-    # HAIR COLOR (UNCHANGED)
-    # --------------------------------------------------
+    
+    
+    
     def apply_hair_color(self, frame, face_landmarks, color_bgr=(180, 0, 255)):
         if not face_landmarks:
             return frame
@@ -158,8 +158,8 @@ class ETryProcessor:
             + color_layer * (alpha * 0.4)
         ).astype(np.uint8)
 
-    # --------------------------------------------------
-    # ACCESSORY PLACEHOLDER (KEPT)
-    # --------------------------------------------------
+    
+    
+    
     def fit_accessory(self, frame, item_img, face_landmarks):
         return frame
