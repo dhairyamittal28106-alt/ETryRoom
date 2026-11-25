@@ -32,3 +32,8 @@ Thumbs.db
 
 !static/models/
 !static/models/pose_landmarker_lite.task
+
+etry_extension/static/
+etry_extension/assets/
+etry_extension/vision-wasm/
+etry_extension/models/

@@ -10,7 +10,8 @@
     "test": "echo \"Error: no test specified\" && exit 1",
     "build": "vite build",
     "dev": "vite --host 127.0.0.1",
-    "start": "python app.py"
+    "start": "python app.py",
+    "build:extension": "vite build && node scripts/package-extension.mjs"
   },
   "repository": {
     "type": "git",

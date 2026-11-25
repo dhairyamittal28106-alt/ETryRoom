@@ -1,3 +1,4 @@
+import {pattern,point,mixPoint,segment,drawWarpedGarment} from './garment-renderer.js';
 import {fitFromPose,containRect,smoothFit,offsetFit} from './geometry.mjs';
 import('./fit3d.js').catch(()=>toast('Could not load the 3D studio. Check the local build assets.'));
 const $=id=>document.getElementById(id),canvas=$('mirrorCanvas'),ctx=canvas.getContext('2d'),video=$('cameraVideo'),W=canvas.width,H=canvas.height;
@@ -41,125 +42,6 @@ async function select(p){
   s.img=garment;s.selected=p;if(window.ETry3D)window.ETry3D.setTexture(s.img,p.type,p.id);$('selectedName').textContent=p.name;$('selectedType').textContent=p.type;$('selectedThumb').replaceChildren(Object.assign(new Image(),{src:p.outfitSrc||p.src}));$('removeBtn').hidden=!p.custom;wardrobe();return true;}catch(e){if(version===selectionVersion)toast(e.message);return false;}}
 function model(){const g=ctx.createLinearGradient(0,0,W,H);g.addColorStop(0,'#eef0e6');g.addColorStop(1,'#dce2cf');ctx.fillStyle=g;ctx.fillRect(0,0,W,H);ctx.fillStyle='#d6bfa7';ctx.beginPath();ctx.ellipse(360,185,62,83,0,0,7);ctx.fill();ctx.beginPath();ctx.moveTo(325,255);ctx.quadraticCurveTo(230,270,215,330);ctx.lineTo(175,575);ctx.quadraticCurveTo(180,620,210,600);ctx.lineTo(270,400);ctx.lineTo(260,610);ctx.quadraticCurveTo(360,640,460,610);ctx.lineTo(450,400);ctx.lineTo(510,600);ctx.quadraticCurveTo(545,620,545,575);ctx.lineTo(505,330);ctx.quadraticCurveTo(490,270,395,255);ctx.closePath();ctx.fill();ctx.fillStyle='#999f8b';ctx.fillRect(278,610,62,215);ctx.fillRect(380,610,62,215);}
 // Build pose-independent fabric panels once per selected image.
-const patternCache=new WeakMap();
-function pattern(image,kind){
- if(patternCache.has(image))return patternCache.get(image);
- const c=document.createElement('canvas');c.width=256;c.height=320;
- const ctx=c.getContext('2d',{willReadFrequently:true});ctx.drawImage(image,0,0,256,320);
- const rgba=ctx.getImageData(0,0,256,320).data;
- const solid=(x,y)=>rgba[(y*256+x)*4+3]>128;
- const spans=[];
- for(let y=0;y<320;y++){
-  const runs=[];let start=-1;
-  for(let x=0;x<=256;x++){
-   if(x<256&&solid(x,y)){if(start<0)start=x;}
-   else if(start>=0){if(x-start>3)runs.push([start,x]);start=-1;}
-  }
-  spans.push(runs);
- }
- function central(y){
-  return spans[y].reduce((best,r)=>Math.abs((r[0]+r[1])/2-128)<Math.abs((best[0]+best[1])/2-128)?r:best,[-999,-999]);
- }
- const hem=central(280),middle=hem[0]>=0?(hem[0]+hem[1])/2:128;
- const half=Math.max(42,Math.min(88,(hem[1]-hem[0])/2||80));
- const panel=()=>{const v=document.createElement('canvas');v.width=128;v.height=320;return v;};
- const body=panel(),sleeves=[panel(),panel()],legs=[panel(),panel()];
- const bodyCtx=body.getContext('2d');
- for(let y=0;y<320;y++){
-  const span=y<95&&spans[y].length?[spans[y][0][0],spans[y].at(-1)[1]]:central(y);
-  if(span[0]>=0){
-   const x=Math.max(span[0],middle-half),right=Math.min(span[1],middle+half);
-   if(right>x)bodyCtx.drawImage(c,x,y,right-x,1,(x-middle+half)*64/half,y,(right-x)*64/half,1);
-  }
-  for(let side=0;side<2;side++){
-   const runs=spans[y];if(!runs.length)continue;
-   let [lo,hi]=runs[side?runs.length-1:0];
-   if(runs.length===1){const mid=(lo+hi)/2;if(side)lo=mid;else hi=mid;}
-   legs[side].getContext('2d').drawImage(c,lo,y,hi-lo,1,0,y,128,1);
-  }
- }
- const ends=[];
- for(let side=0;side<2;side++){
-  const bounds=[];
-  for(let x=12;x<51;x++){const col=side?255-x:x;let lo=0,hi=319;
-   while(lo<hi&&!solid(col,lo))lo++;while(hi>lo&&!solid(col,hi))hi--;
-   if(hi-lo>12)bounds.push([col,lo,hi]);}
-  ends.push(bounds.length?bounds.map(v=>v[2]).sort((a,b)=>a-b)[bounds.length>>1]:140);
-  const sc=sleeves[side].getContext('2d');
-  for(let x=0;x<128&&bounds.length;x++){const [col,lo,hi]=bounds[Math.min(bounds.length-1,Math.floor(x*bounds.length/128))];// A bent source arm can leave background gaps in this column.
-   const occupied=[];
-   for(let y=lo;y<=hi;y++)if(solid(col,y))occupied.push(y);
-   for(let y=0;y<320;y++){
-    const sample=occupied[Math.floor(y*occupied.length/320)];
-    sc.drawImage(c,col,sample,1,1,x,y,1,1);
-   }}
- }
- const result={body,sleeves,legs,long:Math.max(...ends)>225};
- patternCache.set(image,result);return result;
-}
-function point(fit,side,joint){
- const x=fit[side+joint+'X'],y=fit[side+joint+'Y'];
- return Number.isFinite(x)&&Number.isFinite(y)?{x,y}:null;
-}
-function mixPoint(a,b,t){return {x:a.x+(b.x-a.x)*t,y:a.y+(b.y-a.y)*t};}
-function segment(ctx,img,a,b,w0,w1,t0=0,t1=1){
- const dx=b.x-a.x,dy=b.y-a.y,length=Math.hypot(dx,dy);
- if(length<1)return;
- ctx.save();ctx.translate(a.x,a.y);ctx.rotate(Math.atan2(-dx,dy));
- const rows=Math.min(90,Math.ceil(length));
- for(let i=0;i<rows;i++){const t=i/rows,width=w0+(w1-w0)*t;
-  ctx.drawImage(img,0,img.height*(t0+(t1-t0)*t),img.width,img.height*(t1-t0)/rows,-width/2,length*t,width,length/rows+.65);}
- ctx.restore();
-}
-function drawWarpedGarment(image,f,ctx){
- const cloth=pattern(image,'upper'),span=f.shoulderWidth;
- const L=point(f,'left','Shoulder'),R=point(f,'right','Shoulder'),H=point(f,'left','Hip'),J=point(f,'right','Hip');
- const shoulders=mixPoint(L,R,.5),hips=mixPoint(H,J,.5),height=Math.hypot(hips.x-shoulders.x,hips.y-shoulders.y);
- const neck=mixPoint(shoulders,hips,-.215),hem=mixPoint(shoulders,hips,1.13);
- const lower=s.lower||[];
- ctx.save();ctx.translate(f.x+s.x,f.y+s.y);ctx.rotate(s.rot*Math.PI/180);ctx.scale(s.scale,s.scale);ctx.translate(-f.x,-f.y);
- for(const [index,side] of ['left','right'].entries()){
-  const hip=index?J:H,shoulder=index?R:L;
-  const knee=point(f,side,'Knee')||{x:hip.x,y:hip.y+height*.96};
-  const ankle=point(f,side,'Ankle'),end=ankle||mixPoint(hip,knee,2);
-  if(lower[0]){
-   const fabric=pattern(lower[0],'pants').legs[index],legWidth=Math.max(span*.64,Math.abs(J.x-H.x)*1.05);
-   segment(ctx,fabric,mixPoint(hip,knee,-.18),knee,legWidth,legWidth*.79,0,.54);
-   segment(ctx,fabric,knee,end,legWidth*.79,legWidth*.7,.54,1);
-  }
-  if(lower[1]&&ankle){const toe=point(f,side,'Toe');if(toe)segment(ctx,pattern(lower[1],'shoe').legs[index],ankle,toe,span*.20,span*.23);}
-  const elbow=point(f,side,'Elbow')||{x:shoulder.x+(index?1:-1)*span*.15,y:shoulder.y+height*.56};
-  const wrist=point(f,side,'Wrist')||mixPoint(shoulder,elbow,1.9);
-  // Seat the sleeve cap toward the neck even when the upper arm lifts.
-  const start=mixPoint(shoulder,neck,.19);
-  start.y-=span*.035;
-  const fabric=cloth.sleeves[index];
-  if(cloth.long){segment(ctx,fabric,start,mixPoint(start,elbow,1.065),span*.46,span*.33,0,.55);segment(ctx,fabric,elbow,wrist,span*.31,span*.23,.55,1);}
-  else segment(ctx,fabric,start,mixPoint(shoulder,elbow,.68),span*.46,span*.34);
- }
- const width=Math.max(span*1.34,height*.78,f.chestWidth||0);
- // Interpolate both the tilt and width between the shoulder and hip lines.
- const hipAngle=Math.atan2(J.y-H.y,J.x-H.x);
- const hemWidth=Math.max(width*.94,Math.hypot(J.x-H.x,J.y-H.y)*1.52);
- const rows=Math.max(16,Math.min(160,Math.ceil(height)));
- for(let row=0;row<rows;row++){
-  const t=row/rows,center=mixPoint(neck,hem,t);
-  const angle=f.angle*(1-t)+hipAngle*t;
-  const chest=Math.min(1,t/.12),slope=.78+.22*Math.sin(chest*Math.PI/2);
-  const girth=(width*(1-t)+hemWidth*t)*slope;
-  ctx.save();ctx.translate(center.x,center.y);ctx.rotate(angle);
-  ctx.drawImage(cloth.body,0,t*cloth.body.height,cloth.body.width,cloth.body.height/rows,
-    -girth/2,0,girth,Math.hypot(hem.x-neck.x,hem.y-neck.y)/rows+1);
-  ctx.restore();
- }
- // A bent forearm crossing the chest must be drawn in front of the torso.
- if(cloth.long)for(const [i,side] of ['left','right'].entries()){
-  const elbow=point(f,side,'Elbow'),wrist=point(f,side,'Wrist');
-  if(elbow&&wrist&&wrist.x>L.x&&wrist.x<R.x&&wrist.y<hem.y&&wrist.y>neck.y)
-   segment(ctx,cloth.sleeves[i],elbow,wrist,span*.31,span*.23,.55,1);
- }
- ctx.restore();
-}
 function updateBodyMask(mask){
  if(!mask){s.bodyMask=null;return;}
  const pixels=mask.getAsFloat32Array(),w=mask.width,h=mask.height;
@@ -194,7 +76,7 @@ function lightFabric(fit){
  }
 }
 function drawWornGarment(image,fit,rect){
- garmentCtx.clearRect(0,0,W,H);drawWarpedGarment(image,fit,garmentCtx);
+ garmentCtx.clearRect(0,0,W,H);drawWarpedGarment(image,fit,garmentCtx,s);
  if(s.bodyMask){garmentCtx.globalCompositeOperation='destination-in';garmentCtx.save();if(s.mirror){garmentCtx.translate(rect.x*2+rect.width,0);garmentCtx.scale(-1,1);}garmentCtx.drawImage(s.bodyMask,rect.x,rect.y,rect.width,rect.height);garmentCtx.restore();garmentCtx.globalCompositeOperation='source-over';}
  lightFabric(fit);
  // Confine the lighting pass to the final garment silhouette.
@@ -233,6 +115,16 @@ function draw(){
     if(x>=0&&x<mw&&data[(y*mw+x)*4+3]>150){
      while(left>0&&data[(y*mw+left-1)*4+3]>150)left--;
      while(right+1<mw&&data[(y*mw+right+1)*4+3]>150)right++;
+     const waistX = (f.leftHipX + f.rightHipX) / 2 * .7 + f.x * .3;
+     const waistY = (f.leftHipY + f.rightHipY) / 2 * .7 + f.y * .3;
+     const wx = Math.round((s.mirror ? 1-waistX/cameraRect.width : waistX/cameraRect.width)*mw);
+     const wy = Math.round(waistY/cameraRect.height*mh);
+     if (wy>=0 && wy<mh && wx>=0 && wx<mw && data[(wy*mw+wx)*4+3]>150) {
+       let lo=wx, hi=wx;
+       while(lo>0 && data[(wy*mw+lo-1)*4+3]>150) lo--;
+       while(hi+1<mw && data[(wy*mw+hi+1)*4+3]>150) hi++;
+       f.waistWidth=Math.max(f.shoulderWidth*.88, Math.min(f.shoulderWidth*1.48,(hi-lo+2)*cameraRect.width/mw));
+     }
      f.chestWidth=Math.min(f.shoulderWidth*1.53,(right-left)*cameraRect.width/mw);
     }
    }
@@ -314,6 +206,9 @@ $('catalogNav').onclick=()=>$('catalogPanel').scrollIntoView({behavior:'smooth'}
 $('saveBtn').onclick=async()=>{try{const data=snapshot();if(s.account){const saved=await api('/api/looks',{method:'POST',body:JSON.stringify({name:s.selected.name,image_data:data})});s.looks.unshift({...saved,src:data});}else{const l={id:crypto.randomUUID(),name:s.selected.name,src:data};await store('looks','put',l);s.looks.push(l);}lookList();toast('Look saved to your account.');}catch(e){toast(e.message||'Could not save. Download a snapshot instead.');}};$('downloadBtn').onclick=()=>{const a=document.createElement('a');a.download='etryroom-look.png';a.href=snapshot();a.click();};
 function showLooks(on){$('workspace').hidden=on;$('looksPanel').hidden=!on;if(on){showSource('demo');lookList();}}$('looksNav').onclick=()=>showLooks(true);$('studioNav').onclick=$('backBtn').onclick=()=>showLooks(false);
 $('helpBtn').onclick=()=>{ $('dialogTitle').textContent='Meet your fitting studio.';$('dialogBody').innerHTML='<p>Pick a garment, start the camera or upload a photo, then drag and adjust the preview.</p><p>Camera frames stay in your browser. Pose tracking downloads on first use. Uploads and looks save to this browser. The overlay is a style preview, not a size recommendation.</p>';$('infoDialog').showModal();};$('extensionBtn').onclick=()=>toast('Load etry_extension as an unpacked Chrome or Edge extension. Right click a product image to import it.');$('closeDialog').onclick=$('dialogDone').onclick=()=>$('infoDialog').close();
-window.addEventListener('message',async e=>{if(e.source!==window||e.origin!==location.origin||e.data?.type!=='ETRYROOM_IMPORT')return;try{await addPiece(e.data.data,e.data.name||'Shopping find');$('productName').value=(e.data.name||'Shopping find').slice(0,100);$('garmentType').value=inferGarmentType(e.data.name||'');$('sourceUrl').value=e.data.chart?.sourceUrl||e.data.sourceUrl||'';const chart=e.data.chart;if(chart?.sizes?.length>=2){$('measurementBasis').value=chart.basis==='body'?'body':'garment';updateChartHelp();$('sizeChartInput').value=chart.sizes.map(size=>{const values=[String(size.label).replace(/[\r\n,]/g,' ').slice(0,24)];if(chart.basis==='body'){values.push(size.chest_min_cm,size.chest_max_cm);if(size.waist_min_cm!=null||size.hip_min_cm!=null)values.push(size.waist_min_cm??'',size.waist_max_cm??'',size.hip_min_cm??'',size.hip_max_cm??'');}else{values.push(size.chest_cm);if(size.waist_cm!=null||size.hip_cm!=null)values.push(size.waist_cm??'',size.hip_cm??'');}return values.join(', ');}).join('\n');}$('catalogEditor').scrollIntoView({behavior:'smooth',block:'center'});const message=chart?.sizes?.length>=2?(chart.basisConfidence==='range'?'Ranges were detected as body measurements. Verify the chart basis and every value before saving.':'Product photo imported with detected chart values. Review the measurements before saving.'):'Product photo imported. No readable size table was detected; enter the source measurements before saving.';toast(message);window.postMessage({type:'ETRYROOM_IMPORTED',requestId:e.data.requestId},location.origin);history.replaceState({},'',location.pathname+location.hash);}catch{toast('Could not import this product image.');}});
+window.addEventListener('message',async e=>{if(e.source!==window||e.origin!==location.origin||e.data?.type!=='ETRYROOM_IMPORT')return;try{await addPiece(e.data.data,e.data.name||'Shopping find');$('productName').value=(e.data.name||'Shopping find').slice(0,100);$('garmentType').value=inferGarmentType(e.data.name||'');$('sourceUrl').value=e.data.chart?.sourceUrl||e.data.sourceUrl||'';const chart=e.data.chart;if(chart?.sizes?.length>=2){$('measurementBasis').value=chart.basis==='body'?'body':'garment';updateChartHelp();$('sizeChartInput').value=chart.sizes.map(size=>{const values=[String(size.label).replace(/[\r\n,]/g,' ').slice(0,24)];if(chart.basis==='body'){values.push(size.chest_min_cm,size.chest_max_cm);if(size.waist_min_cm!=null||size.hip_min_cm!=null)values.push(size.waist_min_cm??'',size.waist_max_cm??'',size.hip_min_cm??'',size.hip_max_cm??'');}else{values.push(size.chest_cm);if(size.waist_cm!=null||size.hip_cm!=null)values.push(size.waist_cm??'',size.hip_cm??'');}return values.join(', ');}).join('\n');}if (location.protocol === 'chrome-extension:') { await startCamera(); $('mirror').scrollIntoView({block:'center'}); } else $('catalogEditor').scrollIntoView({behavior:'smooth',block:'center'});const message=chart?.sizes?.length>=2?(chart.basisConfidence==='range'?'Ranges were detected as body measurements. Verify the chart basis and every value before saving.':'Product photo imported with detected chart values. Review the measurements before saving.'):'Product photo imported. No readable size table was detected; enter the source measurements before saving.';toast(message);window.postMessage({type:'ETRYROOM_IMPORTED',requestId:e.data.requestId},location.origin);history.replaceState({},'',location.pathname+location.hash);}catch{toast('Could not import this product image.');}});
 window.addEventListener('pagehide',()=>s.stream?.getTracks().forEach(t=>t.stop()));document.addEventListener('visibilitychange',()=>{if(document.hidden&&s.source==='camera')showSource('demo');});
-async function init(){pendingResetToken=new URLSearchParams(location.hash.slice(1)).get('reset_token')||'';if(pendingResetToken){history.replaceState(null,'',location.pathname+location.search);authMode='reset';}try{s.pieces.push(...await store('pieces','getAll'));s.looks=await store('looks','getAll');}catch{toast('Browser storage unavailable.');}await select(defaults[0]);showSource('demo');await loadAccount();await loadCatalog();lookList();requestAnimationFrame(draw);document.documentElement.dataset.etryroomReady='true';window.postMessage({type:'ETRYROOM_READY'},location.origin);if(pendingResetToken&&!$('accountDialog').open)openAccount();}init();
+async function init(){pendingResetToken=new URLSearchParams(location.hash.slice(1)).get('reset_token')||'';if(pendingResetToken){history.replaceState(null,'',location.pathname+location.search);authMode='reset';}try{s.pieces.push(...await store('pieces','getAll'));s.looks=await store('looks','getAll');}catch{toast('Browser storage unavailable.');}await select(defaults[0]);showSource('demo');if (location.protocol === 'chrome-extension:') {
+  for (const id of ['catalogNav','accountBtn','extensionBtn','catalogPanel','catalogEditor','accountBanner','saveProfileBtn']) $(id).hidden = true;
+} else { await loadAccount(); await loadCatalog(); }
+lookList();requestAnimationFrame(draw);document.documentElement.dataset.etryroomReady='true';window.postMessage({type:'ETRYROOM_READY'},location.origin);if(pendingResetToken&&!$('accountDialog').open)openAccount();}init();

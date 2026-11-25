@@ -22,5 +22,5 @@ export default defineConfig({
       cpSync(resolve(root, 'static/models/pose_landmarker_lite.task'), resolve(output, 'models/pose_landmarker_lite.task'));
     }
   }],
-  build: { outDir: resolve(root, 'public/static'), emptyOutDir: true }
+  build: { rollupOptions: {input: {studio:resolve(root,'static/index.html'), panel:resolve(root,'static/panel.html')}}, outDir: resolve(root, 'public/static'), emptyOutDir: true }
 });

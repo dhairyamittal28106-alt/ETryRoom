@@ -39,7 +39,9 @@ The build copies the MediaPipe pose assets, ONNX Runtime Web files, and the clot
 
 ## Shopping extension
 
-In Chrome or Edge, open the Extensions page, enable **Developer mode**, choose **Load unpacked**, and select `etry_extension`. On a product page, right-click a PNG, JPG, or WebP image and select **Try item + detect size chart in ETryRoom**. The extension imports the image and page title and attempts to read a visible size table. Review every detected chart value before saving; inaccessible or non-tabular charts need manual entry. Reload the unpacked extension after changing its files.
+Run `npm ci` and `npm run build:extension` from the repository root. In Chrome or Edge, open Extensions, enable **Developer mode**, choose **Load unpacked**, and select `etry_extension`. Rebuild and reload the extension after editing the studio.
+
+Choose **Try on** beside the product’s **Add to cart** button. In the side panel choose **Add your photo** or **Open camera**. Use a clear photo with shoulders and hips visible. Approve access to the product image if prompted. The panel reuses your photo for other products until you close it. For stores with custom purchase controls, open ETryRoom from the toolbar and use **Pick a product on this page**.
 
 ## Size comparisons
 

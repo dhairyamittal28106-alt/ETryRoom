@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>ETryRoom fitting room</title>
+  <link rel="stylesheet" href="./panel.css">
+</head>
+<body>
+  <header><span class="brand">ETryRoom<span aria-hidden="true">.</span></span><span class="privacy">On-device</span></header>
+  <main>
+    <h1>The fitting <em>room.</em></h1>
+    <section aria-label="Photo preview">
+      <div id="preview">
+        <div class="empty">
+          <svg aria-hidden="true" width="72" height="76" viewBox="0 0 72 76" fill="none" stroke="currentColor" stroke-width="1.3"><path d="M6 22V8h14m32 0h14v14M6 54v14h14m32 0h14V54"/><ellipse cx="36" cy="29" rx="9" ry="12"/><path d="M17 60l2-9c1-5 7-7 12-9l5 6 5-6c5 2 11 4 12 9l2 9"/></svg>
+          <h2 id="photoHeading">Start with your photo</h2>
+          <p id="photoGuide">Face forward with your shoulders<br>and hips in the frame.</p>
+        </div>
+        <video hidden muted autoplay playsinline></video><canvas hidden aria-label="Fitting photo"></canvas>
+      </div>
+      <div class="tools">
+        <button id="upload">Add photo</button>
+        <input id="file" type="file" accept="image/jpeg,image/png,image/webp" hidden>
+        <button class="secondary" id="camera">Open camera</button>
+        <button class="secondary" id="capture" hidden>Take photo</button>
+      </div>
+    </section>
+    <section class="piece" aria-labelledby="piece-title">
+      <div class="piece-head"><h2 id="piece-title">Garment</h2><button class="text-btn" id="pick">Pick from page <span aria-hidden="true">↗</span></button></div>
+      <p id="product">Choose Try now next to an item while you shop.</p>
+      <button class="secondary" id="apply" hidden>Allow product image</button>
+      <button class="secondary" id="productUpload" hidden>Use a saved product image</button>
+      <input type="file" id="productFile" accept="image/*" hidden>
+    </section>
+    <p id="status" role="status"></p>
+    <button id="save" hidden>Save photo <span aria-hidden="true">↓</span></button>
+  </main>
+  <script type="module" src="./panel.js"></script>
+</body>
+</html>

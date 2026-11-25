@@ -18,47 +18,26 @@ async function toJpeg(dataUrl) {
 }
 
 async function importPending() {
+  const params = new URLSearchParams(location.search);
+  if (params.has('import_error')) {
+    const {importError} = await chrome.storage.session.get('importError');
+    alert(importError || 'Image unavailable. Upload a product photo instead.');
+    return;
+  }
+  const id = params.get('import');
+  if (!id) return;
   try {
-    const {pending, importError} = await chrome.runtime.sendMessage({type: 'ETRYROOM_GET_PENDING'});
-    if (importError) throw new Error(importError);
-    if (!pending?.data) return;
+    const pending = (await chrome.storage.session.get(id))[id];
+    if (!pending) return;
     const data = await toJpeg(pending.data);
-    const requestId = crypto.randomUUID();
-    const finish = event => {
-      if (event.source !== window || event.origin !== location.origin ||
-          event.data?.type !== 'ETRYROOM_IMPORTED' || event.data?.requestId !== requestId) return;
-      window.removeEventListener('message', finish);
-      chrome.runtime.sendMessage({type: 'ETRYROOM_CLEAR_PENDING'});
-    };
-    window.addEventListener('message', finish);
-    window.postMessage({
-      type: 'ETRYROOM_IMPORT',
-      data,
-      name: pending.name || 'Shopping find',
-      sourceUrl: pending.sourceUrl || '',
-      chart: pending.chart || null,
-      requestId
-    }, location.origin);
-  } catch (error) {
-    chrome.runtime.sendMessage({type: 'ETRYROOM_CLEAR_PENDING'});
-    alert(error.message || 'Could not import this image. Try saving it and uploading it in ETryRoom.');
-  }
+    await chrome.storage.session.remove(id);
+    history.replaceState(null, '', location.pathname);
+    window.postMessage({...pending, data, type:'ETRYROOM_IMPORT', requestId:id}, location.origin);
+  } catch (error) { alert(error.message); }
 }
-
-if (location.pathname === '/' && new URLSearchParams(location.search).has('import')) {
-  if (document.documentElement.dataset.etryroomReady === 'true') {
-    importPending();
-  } else {
-    window.addEventListener('message', event => {
-      if (event.source === window && event.origin === location.origin && event.data?.type === 'ETRYROOM_READY') {
-        importPending();
-      }
-    }, {once: true});
-  }
-}
-if (location.pathname === '/' && new URLSearchParams(location.search).has('import_error')) {
-  chrome.runtime.sendMessage({type: 'ETRYROOM_GET_PENDING'}).then(async ({importError}) => {
-    if (importError) alert(importError);
-    await chrome.runtime.sendMessage({type: 'ETRYROOM_CLEAR_PENDING'});
-  });
-}
+if (document.documentElement.dataset.etryroomReady) importPending();
+else window.addEventListener('message', function ready(event) {
+  if (event.source !== window || event.data?.type !== 'ETRYROOM_READY') return;
+  window.removeEventListener('message', ready);
+  importPending();
+});
